@@ -10,6 +10,8 @@ import (
 	"net/textproto"
 	"net/url"
 	"time"
+
+	"github.com/jbonachera/nanoproxy/requests"
 )
 
 type UpstreamForwardHandler struct {
@@ -44,15 +46,8 @@ func NewHander(upstream string) (*UpstreamForwardHandler, error) {
 	}, nil
 }
 
-func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	var d net.Dialer
-	rawConn, err := d.DialContext(ctx, "tcp", handler.upstream.Host)
-	if err != nil {
-		log.Printf("textproto/dial failed: %v", err)
-		return
-	}
-	defer rawConn.Close()
+func (handler *UpstreamForwardHandler) InitConnect(rawConn io.ReadWriteCloser, r *http.Request) error {
+	var err error
 	conn := textproto.NewConn(rawConn)
 	if user := handler.upstream.User.String(); user != "" {
 		auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(handler.upstream.User.String())))
@@ -62,15 +57,31 @@ func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.
 	}
 	if err != nil {
 		log.Printf("textproto/write failed: %v", err)
-		return
+		return err
 	}
 	resp, err := conn.ReadLine()
 	if err != nil {
 		log.Printf("textproto/write failed: %v", err)
-		return
+		return err
 	}
 	if resp != "HTTP/1.1 200 Connection established" {
 		log.Printf("proxy refused CONNECT: %s", resp)
+		return err
+	}
+	return nil
+}
+func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	var d net.Dialer
+	rawConn, err := d.DialContext(ctx, "tcp", handler.upstream.Host)
+	if err != nil {
+		log.Printf("textproto/dial failed: %v", err)
+		return
+	}
+	defer rawConn.Close()
+	err = handler.InitConnect(rawConn, r)
+	if err != nil {
+		log.Printf("textproto/connect failed: %v", err)
 		return
 	}
 	w.WriteHeader(200)
@@ -80,21 +91,7 @@ func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.
 		log.Printf("http hijack failed: %v", err)
 		return
 	}
-
-	readCh := make(chan struct{})
-	writeCh := make(chan struct{})
-	go func() {
-		defer close(readCh)
-		io.Copy(rawConn, clientConn)
-	}()
-	go func() {
-		defer close(writeCh)
-		io.Copy(clientConn, rawConn)
-	}()
-	select {
-	case <-readCh:
-	case <-writeCh:
-	}
+	requests.ProcessConnect(clientConn, rawConn)
 }
 func (handler *UpstreamForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s %s", r.Method, r.Host)
@@ -102,25 +99,18 @@ func (handler *UpstreamForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		handler.DoConnect(w, r)
 		return
 	}
-	ctx := r.Context()
-	httpReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
+	httpReq, err := requests.FromClientRequest(r)
 	if err != nil {
 		log.Println(err)
 		return
-	}
-	httpReq = httpReq.WithContext(ctx)
-	for key, values := range r.Header {
-		for _, value := range values {
-			httpReq.Header.Add(key, value)
-		}
 	}
 	resp, err := handler.httpClient.Do(httpReq)
-	if resp.Body != nil {
-		defer resp.Body.Close()
-	}
 	if err != nil {
 		log.Println(err)
 		return
+	}
+	if resp.Body != nil {
+		defer resp.Body.Close()
 	}
 	for key, values := range resp.Header {
 		for _, value := range values {

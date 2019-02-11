@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/jbonachera/nanoproxy/requests"
 )
 
 type HTTPForwardHander struct {
@@ -48,21 +50,7 @@ func (handler *HTTPForwardHander) DoConnect(w http.ResponseWriter, r *http.Reque
 		log.Printf("http hijack failed: %v", err)
 		return
 	}
-
-	readCh := make(chan struct{})
-	writeCh := make(chan struct{})
-	go func() {
-		defer close(readCh)
-		io.Copy(conn, clientConn)
-	}()
-	go func() {
-		defer close(writeCh)
-		io.Copy(clientConn, conn)
-	}()
-	select {
-	case <-readCh:
-	case <-writeCh:
-	}
+	requests.ProcessConnect(clientConn, conn)
 }
 func (handler *HTTPForwardHander) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	log.Printf("%s %s", r.Method, r.Host)
@@ -70,17 +58,10 @@ func (handler *HTTPForwardHander) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		handler.DoConnect(w, r)
 		return
 	}
-	ctx := r.Context()
-	httpReq, err := http.NewRequest(r.Method, r.URL.String(), r.Body)
+	httpReq, err := requests.FromClientRequest(r)
 	if err != nil {
 		log.Println(err)
 		return
-	}
-	httpReq = httpReq.WithContext(ctx)
-	for key, values := range r.Header {
-		for _, value := range values {
-			httpReq.Header.Add(key, value)
-		}
 	}
 	resp, err := handler.httpClient.Do(httpReq)
 	if err != nil {
