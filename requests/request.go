@@ -2,6 +2,7 @@ package requests
 
 import (
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -20,19 +21,23 @@ func FromClientRequest(r *http.Request) (*http.Request, error) {
 
 }
 
-func ProcessConnect(clientConn io.ReadWriteCloser, upstreamConn io.ReadWriteCloser) {
+func ProcessConnect(clientConn io.ReadWriter, upstreamConn io.ReadWriter) {
 	readCh := make(chan struct{})
 	writeCh := make(chan struct{})
 	go func() {
 		defer close(readCh)
-		io.Copy(upstreamConn, clientConn)
+		_, err := io.Copy(upstreamConn, clientConn)
+		if err != nil {
+			log.Printf("CONNECT: read failed: %v", err)
+		}
 	}()
 	go func() {
 		defer close(writeCh)
-		io.Copy(clientConn, upstreamConn)
+		_, err := io.Copy(clientConn, upstreamConn)
+		if err != nil {
+			log.Printf("CONNECT: write failed: %v", err)
+		}
 	}()
-	select {
-	case <-readCh:
-	case <-writeCh:
-	}
+	<-readCh
+	<-writeCh
 }

@@ -70,33 +70,44 @@ func (handler *UpstreamForwardHandler) InitConnect(rawConn io.ReadWriteCloser, r
 	}
 	return nil
 }
-func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.Request) {
+func (handler *UpstreamForwardHandler) DoConnect(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
 	var d net.Dialer
 	rawConn, err := d.DialContext(ctx, "tcp", handler.upstream.Host)
 	if err != nil {
-		log.Printf("textproto/dial failed: %v", err)
-		return
+		log.Printf("textproto/dial %s failed: %v", handler.upstream.Host, err)
+		return err
 	}
-	defer rawConn.Close()
 	err = handler.InitConnect(rawConn, r)
 	if err != nil {
+		rawConn.Close()
 		log.Printf("textproto/connect failed: %v", err)
-		return
+		return err
 	}
 	w.WriteHeader(200)
-	clientConn, _, err := w.(http.Hijacker).Hijack()
-	defer clientConn.Close()
+	clientConn, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
+		rawConn.Close()
+		clientConn.Close()
 		log.Printf("http hijack failed: %v", err)
-		return
+		return err
 	}
-	requests.ProcessConnect(clientConn, rawConn)
+	go func() {
+		defer func() {
+			rawConn.Close()
+			clientConn.Close()
+		}()
+		requests.ProcessConnect(buf, rawConn)
+	}()
+	return nil
 }
 func (handler *UpstreamForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	log.Printf("%s %s", r.Method, r.Host)
+	start := time.Now()
 	if r.Method == http.MethodConnect {
-		handler.DoConnect(w, r)
+		err := handler.DoConnect(w, r)
+		if err == nil {
+			fmt.Printf("[%v] 200 %s %s\n", time.Since(start), r.Method, r.Host)
+		}
 		return
 	}
 	httpReq, err := requests.FromClientRequest(r)
@@ -105,6 +116,7 @@ func (handler *UpstreamForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 	resp, err := handler.httpClient.Do(httpReq)
+	fmt.Printf("[%v] %d %s %s\n", time.Since(start), resp.StatusCode, r.Method, r.Host)
 	if err != nil {
 		log.Println(err)
 		return

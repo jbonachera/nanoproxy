@@ -1,6 +1,7 @@
 package httpproxy
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -12,6 +13,10 @@ import (
 
 type HTTPForwardHander struct {
 	httpClient *http.Client
+}
+
+var d = &net.Dialer{
+	KeepAlive: 30 * time.Second,
 }
 
 func NewHander() (*HTTPForwardHander, error) {
@@ -34,29 +39,39 @@ func NewHander() (*HTTPForwardHander, error) {
 		httpClient: client,
 	}, nil
 }
-func (handler *HTTPForwardHander) DoConnect(w http.ResponseWriter, r *http.Request) {
+func (handler *HTTPForwardHander) DoConnect(w http.ResponseWriter, r *http.Request) error {
 	ctx := r.Context()
-	var d net.Dialer
 	conn, err := d.DialContext(ctx, "tcp", r.Host)
 	if err != nil {
-		log.Printf("connect/dial failed: %v", err)
-		return
+		log.Printf("connect/dial %s failed: %v", r.Host, err)
+		return err
 	}
-	defer conn.Close()
 	w.WriteHeader(200)
-	clientConn, _, err := w.(http.Hijacker).Hijack()
-	defer clientConn.Close()
+	clientConn, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
+		conn.Close()
+		clientConn.Close()
 		log.Printf("http hijack failed: %v", err)
-		return
+		return err
 	}
-	requests.ProcessConnect(clientConn, conn)
+	go func() {
+		defer func() {
+			conn.Close()
+			clientConn.Close()
+		}()
+		requests.ProcessConnect(buf, conn)
+	}()
+	return nil
 }
 func (handler *HTTPForwardHander) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+
 	log.Printf("%s %s", r.Method, r.Host)
 	if r.Method == http.MethodConnect {
-		handler.DoConnect(w, r)
-		return
+		err := handler.DoConnect(w, r)
+		if err == nil {
+			fmt.Printf("[%v] 200 %s %s\n", time.Since(start), r.Method, r.Host)
+		}
 	}
 	httpReq, err := requests.FromClientRequest(r)
 	if err != nil {
@@ -64,6 +79,7 @@ func (handler *HTTPForwardHander) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	resp, err := handler.httpClient.Do(httpReq)
+	fmt.Printf("[%v] %d %s %s\n", time.Since(start), resp.StatusCode, r.Method, r.Host)
 	if err != nil {
 		log.Println(err)
 		return
