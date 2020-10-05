@@ -72,6 +72,7 @@ func (handler *HTTPForwardHander) ServeHTTP(w http.ResponseWriter, r *http.Reque
 		if err == nil {
 			fmt.Printf("[%v] 200 %s %s\n", time.Since(start), r.Method, r.Host)
 		}
+		return
 	}
 	httpReq, err := requests.FromClientRequest(r)
 	if err != nil {
