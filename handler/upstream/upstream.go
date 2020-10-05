@@ -116,11 +116,11 @@ func (handler *UpstreamForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.
 		return
 	}
 	resp, err := handler.httpClient.Do(httpReq)
-	fmt.Printf("[%v] %d %s %s\n", time.Since(start), resp.StatusCode, r.Method, r.Host)
 	if err != nil {
 		log.Println(err)
 		return
 	}
+	fmt.Printf("[%v] %d %s %s\n", time.Since(start), resp.StatusCode, r.Method, r.Host)
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}

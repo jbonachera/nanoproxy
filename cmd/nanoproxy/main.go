@@ -4,6 +4,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/jbonachera/nanoproxy/handler/httpproxy"
@@ -14,10 +15,18 @@ import (
 )
 
 func main() {
+	config := viper.New()
+	config.SetEnvPrefix("NANOPROXY")
+	config.SetEnvKeyReplacer(strings.NewReplacer("-", "_"))
+	config.AutomaticEnv()
+
 	root := cobra.Command{
 		Use: "nanoproxy",
+		PreRun: func(cmd *cobra.Command, args []string) {
+			config.BindEnv()
+		},
 		Run: func(cmd *cobra.Command, _ []string) {
-			addr, err := net.ResolveTCPAddr("tcp", viper.GetString("bind"))
+			addr, err := net.ResolveTCPAddr("tcp", config.GetString("bind"))
 			if err != nil {
 				log.Fatal(err)
 			}
@@ -30,7 +39,7 @@ func main() {
 				Addr:              addr.String(),
 			}
 
-			if upstreamStr := viper.GetString("upstream"); upstreamStr != "" {
+			if upstreamStr := config.GetString("upstream"); upstreamStr != "" {
 				handler, err := upstream.NewHander(upstreamStr)
 				if err != nil {
 					log.Fatal(err)
@@ -49,9 +58,9 @@ func main() {
 	}
 	root.Flags().StringP("bind", "b", "0.0.0.0:8888", "bind to this address")
 	root.Flags().StringP("upstream", "u", "", "forward requests to this proxy server")
-	viper.BindPFlag("bind", root.Flags().Lookup("bind"))
-	viper.BindPFlag("upstream", root.Flags().Lookup("upstream"))
-	viper.AutomaticEnv()
+	config.BindPFlag("bind", root.Flags().Lookup("bind"))
+	config.BindPFlag("upstream", root.Flags().Lookup("upstream"))
+	config.AutomaticEnv()
 	err := root.Execute()
 	if err != nil {
 		log.Fatal(err)
