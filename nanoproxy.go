@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -200,6 +201,8 @@ func main() {
 			srv := &http.Server{
 				ReadHeaderTimeout: 5 * time.Second,
 				Addr:              addr.String(),
+				// Disable HTTP/2.
+				TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
 			}
 
 			handler, err := NewHander(config.GetString("upstream"))
