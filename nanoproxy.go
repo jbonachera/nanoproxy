@@ -66,7 +66,6 @@ func (handler *HTTPForwardHandler) doUpstreamConnect(w http.ResponseWriter, r *h
 		log.Printf("textproto/connect failed: %v", err)
 		return err
 	}
-	w.WriteHeader(200)
 	clientConn, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		rawConn.Close()
@@ -74,6 +73,7 @@ func (handler *HTTPForwardHandler) doUpstreamConnect(w http.ResponseWriter, r *h
 		log.Printf("http hijack failed: %v", err)
 		return err
 	}
+	rawConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
 	go func() {
 		defer func() {
 			rawConn.Close()
@@ -90,7 +90,6 @@ func (handler *HTTPForwardHandler) doConnect(w http.ResponseWriter, r *http.Requ
 		log.Printf("connect/dial %s failed: %v", r.Host, err)
 		return err
 	}
-	w.WriteHeader(200)
 	clientConn, buf, err := w.(http.Hijacker).Hijack()
 	if err != nil {
 		conn.Close()
@@ -98,6 +97,7 @@ func (handler *HTTPForwardHandler) doConnect(w http.ResponseWriter, r *http.Requ
 		log.Printf("http hijack failed: %v", err)
 		return err
 	}
+	clientConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
 	go func() {
 		defer func() {
 			conn.Close()
