@@ -73,7 +73,7 @@ func (handler *HTTPForwardHandler) doUpstreamConnect(w http.ResponseWriter, r *h
 		log.Printf("http hijack failed: %v", err)
 		return err
 	}
-	rawConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
+	clientConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
 	go func() {
 		defer func() {
 			rawConn.Close()
