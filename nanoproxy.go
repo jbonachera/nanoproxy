@@ -1,13 +1,12 @@
 package main
 
 import (
-	"crypto/tls"
+	"bufio"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"net"
-	"net/http"
 	"net/textproto"
 	"net/url"
 	"strings"
@@ -19,163 +18,110 @@ import (
 	"github.com/spf13/viper"
 )
 
-type HTTPForwardHandler struct {
-	httpClient *http.Client
-	upstream   *url.URL
-}
-
-var d = &net.Dialer{
-	KeepAlive: 30 * time.Second,
-}
-
-func (handler *HTTPForwardHandler) initConnectTransaction(rawConn io.ReadWriteCloser, r *http.Request) error {
-	var err error
-	conn := textproto.NewConn(rawConn)
-	if user := handler.upstream.User.String(); user != "" {
-		auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(handler.upstream.User.String())))
-		err = conn.Writer.PrintfLine(fmt.Sprintf("CONNECT %s HTTP/1.1\nHost: %s\nProxy-Authorization: %s\n", r.Host, r.Header.Get("Host"), auth))
-	} else {
-		err = conn.Writer.PrintfLine(fmt.Sprintf("CONNECT %s HTTP/1.1\nHost: %s\n", r.Host, r.Header.Get("Host")))
-	}
+func upstreamConnHandler(dialer net.Dialer, upstreamURL string) func(conn net.Conn) {
+	upstream, err := url.Parse(upstreamURL)
 	if err != nil {
-		log.Printf("textproto/write failed: %v", err)
-		return err
+		panic(err)
 	}
-	resp, err := conn.ReadLine()
-	if err != nil {
-		log.Printf("textproto/write failed: %v", err)
-		return err
-	}
-	if resp != "HTTP/1.1 200 Connection established" {
-		log.Printf("proxy refused CONNECT: %s", resp)
-		return err
-	}
-	return nil
-}
-func (handler *HTTPForwardHandler) doUpstreamConnect(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-	var d net.Dialer
-	rawConn, err := d.DialContext(ctx, "tcp", handler.upstream.Host)
-	if err != nil {
-		log.Printf("textproto/dial %s failed: %v", handler.upstream.Host, err)
-		return err
-	}
-	err = handler.initConnectTransaction(rawConn, r)
-	if err != nil {
-		rawConn.Close()
-		log.Printf("textproto/connect failed: %v", err)
-		return err
-	}
-	clientConn, buf, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		rawConn.Close()
-		clientConn.Close()
-		log.Printf("http hijack failed: %v", err)
-		return err
-	}
-	clientConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
-	go func() {
-		defer func() {
-			rawConn.Close()
-			clientConn.Close()
-		}()
-		requests.ProcessConnect(buf, rawConn)
-	}()
-	return nil
-}
-func (handler *HTTPForwardHandler) doConnect(w http.ResponseWriter, r *http.Request) error {
-	ctx := r.Context()
-	conn, err := d.DialContext(ctx, "tcp", r.Host)
-	if err != nil {
-		log.Printf("connect/dial %s failed: %v", r.Host, err)
-		return err
-	}
-	clientConn, buf, err := w.(http.Hijacker).Hijack()
-	if err != nil {
-		conn.Close()
-		clientConn.Close()
-		log.Printf("http hijack failed: %v", err)
-		return err
-	}
-	clientConn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
-	go func() {
-		defer func() {
-			conn.Close()
-			clientConn.Close()
-		}()
-		requests.ProcessConnect(buf, conn)
-	}()
-	return nil
-}
-
-func (handler *HTTPForwardHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	start := time.Now()
-	if r.Method == http.MethodConnect {
-		var err error
-		if handler.upstream == nil {
-			err = handler.doConnect(w, r)
-		} else {
-			err = handler.doUpstreamConnect(w, r)
+	return func(conn net.Conn) {
+		defer conn.Close()
+		upstreamConn, err := dialer.Dial("tcp4", upstream.Host)
+		if err != nil {
+			log.Printf("WARN: %v", err)
+			return
 		}
-		if err == nil {
-			fmt.Printf("[%v] 200 %s %s\n", time.Since(start), r.Method, r.Host)
+		defer upstreamConn.Close()
+		txtproto := textproto.NewConn(conn)
+		first := true
+		for {
+			buf, err := txtproto.ReadLineBytes()
+			if first {
+				log.Print(string(buf))
+				first = false
+			}
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			if len(buf) == 0 {
+				break
+			}
+			_, err = upstreamConn.Write(append(buf, '\n'))
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
 		}
-		return
+		if user := upstream.User.String(); user != "" {
+			auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(upstream.User.String())))
+			_, err = upstreamConn.Write([]byte(fmt.Sprintf("Proxy-Authorization: %s\n", auth)))
+		}
+		upstreamConn.Write([]byte{'\n'})
+		go io.Copy(upstreamConn, conn)
+		io.Copy(conn, upstreamConn)
 	}
-	httpReq, err := requests.FromClientRequest(r)
-	if err != nil {
-		log.Printf("ERR: failed to create proxified request: %v\n", err)
-		return
-	}
-	resp, err := handler.httpClient.Do(httpReq)
-	if err != nil {
-		log.Println(err)
-		return
-	}
-	fmt.Printf("[%v] %d %s %s\n", time.Since(start), resp.StatusCode, r.Method, r.Host)
-	if resp.Body != nil {
-		defer resp.Body.Close()
-	}
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
+}
+func connHandler(dialer net.Dialer) func(conn net.Conn) {
+	return func(conn net.Conn) {
+		defer conn.Close()
+		reader := bufio.NewReader(conn)
+		firstLine, err := textproto.NewReader(reader).ReadLine()
+		if err != nil {
+			log.Printf("WARN: %v", err)
+			return
+		}
+		tokens := strings.Split(firstLine, " ")
+		if len(tokens) != 3 {
+			return
+		}
+		log.Print(firstLine)
+
+		switch tokens[0] {
+		case "CONNECT":
+			host := tokens[1]
+			upstream, err := dialer.Dial("tcp4", host)
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			defer upstream.Close()
+			conn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
+			requests.ProcessConnect(conn, upstream)
+		default:
+			remoteURL, err := url.Parse(tokens[1])
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			port := remoteURL.Port()
+			portNum := 0
+			if port == "" {
+				portNum = 80
+			}
+			host := remoteURL.Host
+			if portNum != 0 {
+				host = fmt.Sprintf("%s:%d", remoteURL.Host, portNum)
+			}
+			upstream, err := dialer.Dial("tcp4", host)
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			defer upstream.Close()
+			_, err = upstream.Write(append([]byte(firstLine), '\n'))
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			buf, err := reader.Peek(reader.Buffered())
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			conn.Write(buf)
+			requests.ProcessConnect(conn, upstream)
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
-	if err != nil {
-		log.Printf("WARN: failed to copy response body to client: %v", err)
-	}
-}
-
-func NewHander(upstream string) (*HTTPForwardHandler, error) {
-	proxyURL, err := url.Parse(upstream)
-	if err != nil {
-		return nil, err
-	}
-	if upstream == "" {
-		proxyURL = nil
-	}
-	client := &http.Client{
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-		Transport: &http.Transport{
-			Proxy: http.ProxyURL(proxyURL),
-			DialContext: (&net.Dialer{
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			ResponseHeaderTimeout: 120 * time.Second,
-		},
-	}
-	return &HTTPForwardHandler{
-		httpClient: client,
-		upstream:   proxyURL,
-	}, nil
 }
 
 func main() {
@@ -190,29 +136,26 @@ func main() {
 			config.BindEnv()
 		},
 		Run: func(cmd *cobra.Command, _ []string) {
-			addr, err := net.ResolveTCPAddr("tcp", config.GetString("bind"))
+			listener, err := net.Listen("tcp4", config.GetString("bind"))
 			if err != nil {
 				log.Fatal(err)
 			}
-			listener, err := net.ListenTCP("tcp", addr)
-			if err != nil {
-				log.Fatal(err)
+			dialer := net.Dialer{KeepAlive: 15 * time.Second}
+			upstreamURL := config.GetString("upstream")
+			var h func(net.Conn)
+			if upstreamURL != "" {
+				h = upstreamConnHandler(dialer, config.GetString("upstream"))
+			} else {
+				h = connHandler(dialer)
 			}
-			srv := &http.Server{
-				ReadHeaderTimeout: 5 * time.Second,
-				Addr:              addr.String(),
-				// Disable HTTP/2.
-				TLSNextProto: make(map[string]func(*http.Server, *tls.Conn, http.Handler)),
+			log.Printf("proxy listening on %s", listener.Addr().String())
+			for {
+				conn, err := listener.Accept()
+				if err != nil {
+					log.Printf("net/accept failed: %v", err)
+				}
+				go h(conn)
 			}
-
-			handler, err := NewHander(config.GetString("upstream"))
-			if err != nil {
-				log.Fatal(err)
-			}
-			srv.Handler = handler
-
-			log.Printf("proxy listening on %s", addr.String())
-			log.Fatal(srv.Serve(listener))
 		},
 	}
 	root.Flags().StringP("bind", "b", "0.0.0.0:8888", "bind to this address")
