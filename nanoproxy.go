@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -12,26 +13,50 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jbonachera/nanoproxy/requests"
 	"github.com/spf13/cobra"
 
 	"github.com/spf13/viper"
 )
 
-func upstreamConnHandler(dialer net.Dialer, upstreamURL string) func(conn net.Conn) {
+func bidirectionalPipe(ctx context.Context, clientConn io.ReadWriter, upstreamConn io.ReadWriter) {
+	readCh := make(chan struct{})
+	writeCh := make(chan struct{})
+	go func() {
+		defer close(readCh)
+		io.Copy(upstreamConn, clientConn)
+	}()
+	go func() {
+		defer close(writeCh)
+		io.Copy(clientConn, upstreamConn)
+	}()
+	select {
+	case <-readCh:
+	case <-writeCh:
+	case <-ctx.Done():
+	}
+}
+
+type connHandler func(ctx context.Context, conn io.ReadWriter)
+
+func upstreamConnHandler(dialer net.Dialer, upstreamURL string) connHandler {
 	upstream, err := url.Parse(upstreamURL)
 	if err != nil {
 		panic(err)
 	}
-	return func(conn net.Conn) {
-		defer conn.Close()
-		upstreamConn, err := dialer.Dial("tcp4", upstream.Host)
+	authString := []byte{}
+	if user := upstream.User.String(); user != "" {
+		auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(upstream.User.String())))
+		authString = []byte(fmt.Sprintf("Proxy-Authorization: %s\n", auth))
+	}
+	return func(ctx context.Context, conn io.ReadWriter) {
+		upstreamConn, err := dialer.DialContext(ctx, "tcp", upstream.Host)
 		if err != nil {
 			log.Printf("WARN: %v", err)
 			return
 		}
 		defer upstreamConn.Close()
-		txtproto := textproto.NewConn(conn)
+		reader := bufio.NewReader(conn)
+		txtproto := textproto.NewReader(reader)
 		first := true
 		for {
 			buf, err := txtproto.ReadLineBytes()
@@ -52,18 +77,17 @@ func upstreamConnHandler(dialer net.Dialer, upstreamURL string) func(conn net.Co
 				return
 			}
 		}
-		if user := upstream.User.String(); user != "" {
-			auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(upstream.User.String())))
-			_, err = upstreamConn.Write([]byte(fmt.Sprintf("Proxy-Authorization: %s\n", auth)))
+		if len(authString) > 0 {
+			upstreamConn.Write(authString)
 		}
 		upstreamConn.Write([]byte{'\n'})
-		go io.Copy(upstreamConn, conn)
-		io.Copy(conn, upstreamConn)
+		txtproto.R.Discard(txtproto.R.Buffered())
+		bidirectionalPipe(ctx, conn, upstreamConn)
 	}
 }
-func connHandler(dialer net.Dialer) func(conn net.Conn) {
-	return func(conn net.Conn) {
-		defer conn.Close()
+func forwardConnHandler(dialer net.Dialer) connHandler {
+	return func(ctx context.Context, conn io.ReadWriter) {
+		start := time.Now()
 		reader := bufio.NewReader(conn)
 		firstLine, err := textproto.NewReader(reader).ReadLine()
 		if err != nil {
@@ -74,19 +98,25 @@ func connHandler(dialer net.Dialer) func(conn net.Conn) {
 		if len(tokens) != 3 {
 			return
 		}
-		log.Print(firstLine)
-
+		defer func() {
+			log.Printf("%s (%s)", firstLine, time.Since(start).String())
+		}()
 		switch tokens[0] {
 		case "CONNECT":
 			host := tokens[1]
-			upstream, err := dialer.Dial("tcp4", host)
+			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
 				log.Printf("WARN: %v", err)
 				return
 			}
 			defer upstream.Close()
-			conn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
-			requests.ProcessConnect(conn, upstream)
+			reader.Discard(reader.Buffered())
+			_, err = conn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
+			if err != nil {
+				log.Printf("WARN: %v", err)
+				return
+			}
+			bidirectionalPipe(ctx, conn, upstream)
 		default:
 			remoteURL, err := url.Parse(tokens[1])
 			if err != nil {
@@ -102,7 +132,7 @@ func connHandler(dialer net.Dialer) func(conn net.Conn) {
 			if portNum != 0 {
 				host = fmt.Sprintf("%s:%d", remoteURL.Host, portNum)
 			}
-			upstream, err := dialer.Dial("tcp4", host)
+			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
 				log.Printf("WARN: %v", err)
 				return
@@ -118,10 +148,17 @@ func connHandler(dialer net.Dialer) func(conn net.Conn) {
 				log.Printf("WARN: %v", err)
 				return
 			}
-			conn.Write(buf)
-			requests.ProcessConnect(conn, upstream)
+			upstream.Write(buf)
+			bidirectionalPipe(ctx, conn, upstream)
 		}
 	}
+}
+
+func runHandler(handler connHandler, c net.Conn) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer c.Close()
+	handler(ctx, c)
 }
 
 func main() {
@@ -142,19 +179,34 @@ func main() {
 			}
 			dialer := net.Dialer{KeepAlive: 15 * time.Second}
 			upstreamURL := config.GetString("upstream")
-			var h func(net.Conn)
+			var h connHandler
 			if upstreamURL != "" {
 				h = upstreamConnHandler(dialer, config.GetString("upstream"))
 			} else {
-				h = connHandler(dialer)
+				h = forwardConnHandler(dialer)
 			}
+			var tempDelay time.Duration // how long to sleep on accept failure
+
 			log.Printf("proxy listening on %s", listener.Addr().String())
 			for {
 				conn, err := listener.Accept()
 				if err != nil {
-					log.Printf("net/accept failed: %v", err)
+					if ne, ok := err.(net.Error); ok && ne.Temporary() {
+						if tempDelay == 0 {
+							tempDelay = 5 * time.Millisecond
+						} else {
+							tempDelay *= 2
+						}
+						if max := 1 * time.Second; tempDelay > max {
+							tempDelay = max
+						}
+						log.Printf("net/accept error: %v; retrying in %v", err, tempDelay)
+						time.Sleep(tempDelay)
+						continue
+					}
+					panic(err)
 				}
-				go h(conn)
+				go runHandler(h, conn)
 			}
 		},
 	}
