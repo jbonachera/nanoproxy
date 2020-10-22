@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -36,9 +37,7 @@ func bidirectionalPipe(ctx context.Context, clientConn io.ReadWriter, upstreamCo
 	}
 }
 
-type connHandler func(ctx context.Context, conn io.ReadWriter)
-
-func upstreamConnHandler(dialer net.Dialer, upstreamURL string) connHandler {
+func upstreamProxyResolver(dialer net.Dialer, upstreamURL string) upstreamResolver {
 	upstream, err := url.Parse(upstreamURL)
 	if err != nil {
 		panic(err)
@@ -48,33 +47,36 @@ func upstreamConnHandler(dialer net.Dialer, upstreamURL string) connHandler {
 		auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(upstream.User.String())))
 		authString = []byte(fmt.Sprintf("Proxy-Authorization: %s\n", auth))
 	}
-	return func(ctx context.Context, conn io.ReadWriter) {
+	return func(ctx context.Context, conn io.ReadWriter) (net.Conn, string, error) {
 		upstreamConn, err := dialer.DialContext(ctx, "tcp", upstream.Host)
 		if err != nil {
-			log.Printf("WARN: %v", err)
-			return
+			return nil, "", err
 		}
-		defer upstreamConn.Close()
 		reader := bufio.NewReader(conn)
 		txtproto := textproto.NewReader(reader)
 		first := true
+		remoteHost := ""
 		for {
 			buf, err := txtproto.ReadLineBytes()
 			if first {
-				log.Print(string(buf))
+				tokens := strings.Split(string(buf), " ")
+				if len(tokens) == 3 {
+					return nil, "", errors.New("malformed request")
+				}
+				remoteHost = tokens[1]
 				first = false
 			}
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				upstreamConn.Close()
+				return nil, "", err
 			}
 			if len(buf) == 0 {
 				break
 			}
 			_, err = upstreamConn.Write(append(buf, '\n'))
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				upstreamConn.Close()
+				return nil, "", err
 			}
 		}
 		if len(authString) > 0 {
@@ -82,46 +84,41 @@ func upstreamConnHandler(dialer net.Dialer, upstreamURL string) connHandler {
 		}
 		upstreamConn.Write([]byte{'\n'})
 		txtproto.R.Discard(txtproto.R.Buffered())
-		bidirectionalPipe(ctx, conn, upstreamConn)
+		return upstreamConn, remoteHost, nil
 	}
 }
-func forwardConnHandler(dialer net.Dialer) connHandler {
-	return func(ctx context.Context, conn io.ReadWriter) {
-		start := time.Now()
+
+type upstreamResolver func(ctx context.Context, conn io.ReadWriter) (upstream net.Conn, host string, err error)
+
+func staticUpstreamResolver(dialer net.Dialer) upstreamResolver {
+	return func(ctx context.Context, conn io.ReadWriter) (net.Conn, string, error) {
 		reader := bufio.NewReader(conn)
 		firstLine, err := textproto.NewReader(reader).ReadLine()
 		if err != nil {
-			log.Printf("WARN: %v", err)
-			return
+			return nil, "", err
 		}
 		tokens := strings.Split(firstLine, " ")
 		if len(tokens) != 3 {
-			return
+			return nil, "", errors.New("malformed http request")
 		}
-		defer func() {
-			log.Printf("%s (%s)", firstLine, time.Since(start).String())
-		}()
 		switch tokens[0] {
 		case "CONNECT":
 			host := tokens[1]
 			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				return nil, "", err
 			}
-			defer upstream.Close()
 			reader.Discard(reader.Buffered())
 			_, err = conn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				upstream.Close()
+				return nil, "", err
 			}
-			bidirectionalPipe(ctx, conn, upstream)
+			return upstream, host, nil
 		default:
 			remoteURL, err := url.Parse(tokens[1])
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				return nil, "", err
 			}
 			port := remoteURL.Port()
 			portNum := 0
@@ -134,28 +131,28 @@ func forwardConnHandler(dialer net.Dialer) connHandler {
 			}
 			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				return nil, "", err
 			}
-			defer upstream.Close()
 			_, err = upstream.Write(append([]byte(firstLine), '\n'))
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				upstream.Close()
+				return nil, "", err
 			}
 			buf, err := reader.Peek(reader.Buffered())
 			if err != nil {
-				log.Printf("WARN: %v", err)
-				return
+				upstream.Close()
+				return nil, "", err
 			}
 			upstream.Write(buf)
-			bidirectionalPipe(ctx, conn, upstream)
+			return upstream, host, nil
 		}
 	}
 }
 
 type metricConn struct {
 	conn         net.Conn
+	host         string
+	startedAt    time.Time
 	writtenBytes int
 	readBytes    int
 }
@@ -171,12 +168,22 @@ func (m *metricConn) Read(buf []byte) (int, error) {
 	return n, err
 }
 
-func runHandler(handler connHandler, c net.Conn) {
+func runHandler(stats chan event, resolver upstreamResolver, c net.Conn) {
+	start := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	defer c.Close()
-
-	handler(ctx, &metricConn{conn: c})
+	local := &metricConn{conn: c, startedAt: start}
+	remote, host, err := resolver(ctx, local)
+	local.host = host
+	if err != nil {
+		log.Printf("WARN: %v", err)
+		return
+	}
+	defer remote.Close()
+	stats <- event{kind: connAdded, conn: local}
+	bidirectionalPipe(ctx, local, remote)
+	stats <- event{kind: connRemoved, conn: local}
 }
 
 func main() {
@@ -197,15 +204,17 @@ func main() {
 			}
 			dialer := net.Dialer{KeepAlive: 15 * time.Second}
 			upstreamURL := config.GetString("upstream")
-			var h connHandler
+			var h upstreamResolver
 			if upstreamURL != "" {
-				h = upstreamConnHandler(dialer, config.GetString("upstream"))
+				h = upstreamProxyResolver(dialer, config.GetString("upstream"))
 			} else {
-				h = forwardConnHandler(dialer)
+				h = staticUpstreamResolver(dialer)
 			}
 			var tempDelay time.Duration // how long to sleep on accept failure
 
 			log.Printf("proxy listening on %s", listener.Addr().String())
+			stats := runStats()
+			defer close(stats)
 			for {
 				conn, err := listener.Accept()
 				if err != nil {
@@ -224,7 +233,7 @@ func main() {
 					}
 					panic(err)
 				}
-				go runHandler(h, conn)
+				go runHandler(stats, h, conn)
 			}
 		},
 	}
