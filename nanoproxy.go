@@ -154,11 +154,29 @@ func forwardConnHandler(dialer net.Dialer) connHandler {
 	}
 }
 
+type metricConn struct {
+	conn         net.Conn
+	writtenBytes int
+	readBytes    int
+}
+
+func (m *metricConn) Write(buf []byte) (int, error) {
+	n, err := m.conn.Write(buf)
+	m.writtenBytes += n
+	return n, err
+}
+func (m *metricConn) Read(buf []byte) (int, error) {
+	n, err := m.conn.Read(buf)
+	m.readBytes += n
+	return n, err
+}
+
 func runHandler(handler connHandler, c net.Conn) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	defer c.Close()
-	handler(ctx, c)
+
+	handler(ctx, &metricConn{conn: c})
 }
 
 func main() {
