@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"time"
 )
 
@@ -39,7 +39,10 @@ func runStats() chan event {
 				case connAdded:
 					stats.conn = append(stats.conn, event.conn)
 				case connRemoved:
-					log.Printf("%s %s", event.conn.host, humanDuration(time.Since(event.conn.startedAt)))
+					fmt.Printf("%s %s%s (%s %s)\n",
+						event.conn.remote.method, event.conn.remote.host, event.conn.remote.path,
+						humanDuration(time.Since(event.conn.startedAt)),
+						humanBytes(event.conn.readBytes+event.conn.writtenBytes))
 					for idx, conn := range stats.conn {
 						if conn == event.conn {
 							stats.conn = append(stats.conn[:idx], stats.conn[idx+1:]...)

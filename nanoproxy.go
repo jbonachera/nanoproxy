@@ -37,6 +37,15 @@ func bidirectionalPipe(ctx context.Context, clientConn io.ReadWriter, upstreamCo
 	}
 }
 
+type remote struct {
+	conn   net.Conn
+	host   string
+	path   string
+	method string
+}
+
+type upstreamResolver func(ctx context.Context, conn io.ReadWriter) (upstream *remote, err error)
+
 func upstreamProxyResolver(dialer net.Dialer, upstreamURL string) upstreamResolver {
 	upstream, err := url.Parse(upstreamURL)
 	if err != nil {
@@ -47,28 +56,30 @@ func upstreamProxyResolver(dialer net.Dialer, upstreamURL string) upstreamResolv
 		auth := fmt.Sprintf("Basic %s", base64.StdEncoding.EncodeToString([]byte(upstream.User.String())))
 		authString = []byte(fmt.Sprintf("Proxy-Authorization: %s\n", auth))
 	}
-	return func(ctx context.Context, conn io.ReadWriter) (net.Conn, string, error) {
+	return func(ctx context.Context, conn io.ReadWriter) (*remote, error) {
 		upstreamConn, err := dialer.DialContext(ctx, "tcp", upstream.Host)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		reader := bufio.NewReader(conn)
 		txtproto := textproto.NewReader(reader)
 		first := true
 		remoteHost := ""
+		method := ""
 		for {
 			buf, err := txtproto.ReadLineBytes()
 			if first {
 				tokens := strings.Split(string(buf), " ")
-				if len(tokens) == 3 {
-					return nil, "", errors.New("malformed request")
+				if len(tokens) != 3 {
+					return nil, errors.New("malformed request")
 				}
+				method = tokens[0]
 				remoteHost = tokens[1]
 				first = false
 			}
 			if err != nil {
 				upstreamConn.Close()
-				return nil, "", err
+				return nil, err
 			}
 			if len(buf) == 0 {
 				break
@@ -76,7 +87,7 @@ func upstreamProxyResolver(dialer net.Dialer, upstreamURL string) upstreamResolv
 			_, err = upstreamConn.Write(append(buf, '\n'))
 			if err != nil {
 				upstreamConn.Close()
-				return nil, "", err
+				return nil, err
 			}
 		}
 		if len(authString) > 0 {
@@ -84,41 +95,49 @@ func upstreamProxyResolver(dialer net.Dialer, upstreamURL string) upstreamResolv
 		}
 		upstreamConn.Write([]byte{'\n'})
 		txtproto.R.Discard(txtproto.R.Buffered())
-		return upstreamConn, remoteHost, nil
+		return &remote{
+			conn:   upstreamConn,
+			host:   remoteHost,
+			method: method,
+			path:   "",
+		}, nil
 	}
 }
 
-type upstreamResolver func(ctx context.Context, conn io.ReadWriter) (upstream net.Conn, host string, err error)
-
 func staticUpstreamResolver(dialer net.Dialer) upstreamResolver {
-	return func(ctx context.Context, conn io.ReadWriter) (net.Conn, string, error) {
+	return func(ctx context.Context, conn io.ReadWriter) (*remote, error) {
 		reader := bufio.NewReader(conn)
 		firstLine, err := textproto.NewReader(reader).ReadLine()
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		tokens := strings.Split(firstLine, " ")
 		if len(tokens) != 3 {
-			return nil, "", errors.New("malformed http request")
+			return nil, errors.New("malformed http request")
 		}
 		switch tokens[0] {
 		case "CONNECT":
 			host := tokens[1]
 			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
-				return nil, "", err
+				return nil, err
 			}
 			reader.Discard(reader.Buffered())
 			_, err = conn.Write([]byte("HTTP/1.0 200 Connection established\n\n"))
 			if err != nil {
 				upstream.Close()
-				return nil, "", err
+				return nil, err
 			}
-			return upstream, host, nil
+			return &remote{
+				conn:   upstream,
+				host:   host,
+				method: tokens[1],
+				path:   "",
+			}, nil
 		default:
 			remoteURL, err := url.Parse(tokens[1])
 			if err != nil {
-				return nil, "", err
+				return nil, err
 			}
 			port := remoteURL.Port()
 			portNum := 0
@@ -131,40 +150,45 @@ func staticUpstreamResolver(dialer net.Dialer) upstreamResolver {
 			}
 			upstream, err := dialer.DialContext(ctx, "tcp", host)
 			if err != nil {
-				return nil, "", err
+				return nil, err
 			}
 			_, err = upstream.Write(append([]byte(firstLine), '\n'))
 			if err != nil {
 				upstream.Close()
-				return nil, "", err
+				return nil, err
 			}
 			buf, err := reader.Peek(reader.Buffered())
 			if err != nil {
 				upstream.Close()
-				return nil, "", err
+				return nil, err
 			}
 			upstream.Write(buf)
-			return upstream, host, nil
+			return &remote{
+				conn:   upstream,
+				host:   remoteURL.Host,
+				method: tokens[1],
+				path:   remoteURL.Path,
+			}, nil
 		}
 	}
 }
 
 type metricConn struct {
 	conn         net.Conn
-	host         string
+	remote       *remote
 	startedAt    time.Time
-	writtenBytes int
-	readBytes    int
+	writtenBytes uint64
+	readBytes    uint64
 }
 
 func (m *metricConn) Write(buf []byte) (int, error) {
 	n, err := m.conn.Write(buf)
-	m.writtenBytes += n
+	m.writtenBytes += uint64(n)
 	return n, err
 }
 func (m *metricConn) Read(buf []byte) (int, error) {
 	n, err := m.conn.Read(buf)
-	m.readBytes += n
+	m.readBytes += uint64(n)
 	return n, err
 }
 
@@ -174,15 +198,15 @@ func runHandler(stats chan event, resolver upstreamResolver, c net.Conn) {
 	defer cancel()
 	defer c.Close()
 	local := &metricConn{conn: c, startedAt: start}
-	remote, host, err := resolver(ctx, local)
-	local.host = host
+	remote, err := resolver(ctx, local)
+	local.remote = remote
 	if err != nil {
 		log.Printf("WARN: %v", err)
 		return
 	}
-	defer remote.Close()
+	defer remote.conn.Close()
 	stats <- event{kind: connAdded, conn: local}
-	bidirectionalPipe(ctx, local, remote)
+	bidirectionalPipe(ctx, local, remote.conn)
 	stats <- event{kind: connRemoved, conn: local}
 }
 
