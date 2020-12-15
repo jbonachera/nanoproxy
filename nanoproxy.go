@@ -152,7 +152,7 @@ func staticUpstreamResolver(dialer net.Dialer) upstreamResolver {
 			if err != nil {
 				return nil, err
 			}
-			_, err = upstream.Write(append([]byte(firstLine), '\n'))
+			_, err = fmt.Fprintf(upstream, "%s %s %s\r\n", tokens[0], remoteURL.Path, tokens[2])
 			if err != nil {
 				upstream.Close()
 				return nil, err
