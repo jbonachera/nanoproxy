@@ -3,6 +3,10 @@ mod pac;
 
 use std::collections::HashMap;
 
+use actix::{
+    Actor, ActorContext, ActorFutureExt, Addr, AsyncContext, Context, ContextFutureSpawner,
+    Handler, Message, WrapFuture,
+};
 use std::env;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::net::TcpListener;
@@ -51,27 +55,39 @@ async fn parse_headers(
     Ok(())
 }
 
-async fn process(
-    factory: ProxyFactory,
-    socket: TcpStream,
-) -> Result<(), Box<dyn std::error::Error>> {
+struct ProxyReq {
+    version: String,
+    method: String,
+    resource: String,
+    headers: HashMap<String, String>,
+    reader: BufReader<TcpStream>,
+}
+
+async fn parse_req(socket: TcpStream) -> Result<ProxyReq, Box<dyn std::error::Error>> {
     let mut reader = BufReader::new(socket);
     let mut first_line = String::new();
     reader.read_line(&mut first_line).await?;
     let mut result = first_line.trim().splitn(3, " ");
     let method = result.next().unwrap().to_string();
-    let path = result.next().unwrap().to_string();
+    let resource = result.next().unwrap().to_string();
     let version = result.next().unwrap();
-    if version != "HTTP/1.1" {
-        println!("dropping unsupported version {}", version);
-        return Ok(());
-    }
+
     let mut headers = HashMap::new();
     parse_headers(&mut headers, &mut reader).await?;
+    Ok(ProxyReq {
+        reader,
+        headers,
+        method,
+        resource,
+        version: version.to_string(),
+    })
+}
 
-    let (remote, mut conn) = dial(factory, &method, &path, &mut headers).await?;
+async fn process(socket: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
+    let mut req = parse_req(socket).await?;
+    let (remote, mut conn) = dial(&req.method, &req.resource, &mut req.headers).await?;
 
-    let buf = reader.buffer();
+    let buf = req.reader.buffer();
     if buf.len() > 0 {
         conn.write(buf).await.map_err(|err| {
             io::Error::new(
@@ -80,9 +96,9 @@ async fn process(
             )
         })?;
     }
-    let mut socket = reader.into_inner();
+    let mut socket = req.reader.into_inner();
 
-    if method == "CONNECT" {
+    if req.method == "CONNECT" {
         socket
             .write(format!("HTTP/1.1 200 Connection established\r\n\r\n").as_bytes())
             .await
@@ -106,7 +122,28 @@ async fn process(
     Ok(())
 }
 
-#[tokio::main]
+#[derive(Message)]
+#[rtype(result = "()")]
+struct NewConnection {
+    conn: TcpStream,
+}
+struct ProxyServer {}
+impl Actor for ProxyServer {
+    type Context = Context<Self>;
+}
+
+impl Handler<NewConnection> for ProxyServer {
+    type Result = ();
+
+    fn handle(&mut self, msg: NewConnection, ctx: &mut Self::Context) -> Self::Result {
+        process(msg.conn)
+            .into_actor(self)
+            .then(|res, act, ctx| actix::fut::ready(()))
+            .wait(ctx);
+    }
+}
+
+#[actix::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listen_addr = env::args()
         .nth(1)
@@ -114,19 +151,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Listening on: {}", listen_addr);
 
+    let server = ProxyServer::create(|ctx| ProxyServer {});
+
     let listener = TcpListener::bind(listen_addr).await?;
 
-    while let Ok((socket, addr)) = listener.accept().await {
-        let factory = ProxyFactory::new().unwrap();
-
-        tokio::spawn(async move {
-            match process(factory, socket).await {
-                Ok(_) => {}
-                Err(v) => {
-                    println!("tunnel failed: {}", v);
-                }
-            };
-        });
+    while let Ok((conn, addr)) = listener.accept().await {
+        server.do_send(NewConnection { conn });
     }
     Ok(())
 }

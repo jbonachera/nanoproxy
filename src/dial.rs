@@ -129,7 +129,6 @@ fn serialize_headers(headers: &HashMap<String, String>) -> String {
 }
 
 pub async fn dial(
-    factory: ProxyFactory,
     method: &String,
     path: &String,
     headers: &mut HashMap<String, String>,
