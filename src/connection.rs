@@ -57,10 +57,10 @@ impl<T: AsyncWrite + Unpin> AsyncWrite for ProxyConnection<T> {
 impl<T> Connection for ProxyConnection<T> {
     fn connected(&self) -> hyper::client::connect::Connected {
         match self {
-            ProxyConnection::Proxy { inner } => {
+            ProxyConnection::Proxy { inner: _ } => {
                 hyper::client::connect::Connected::new().proxy(true)
             }
-            ProxyConnection::NoProxy { inner } => {
+            ProxyConnection::NoProxy { inner: _ } => {
                 hyper::client::connect::Connected::new().proxy(false)
             }
         }

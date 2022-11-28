@@ -1,6 +1,7 @@
 mod connection;
 mod connector;
 mod credentials;
+mod frontend;
 mod pac;
 mod resolver;
 
@@ -9,24 +10,29 @@ use std::net::SocketAddr;
 
 use connector::ProxyConnector;
 use credentials::{CredentialProvider, ProxyAuthRule};
+use crossterm::terminal::disable_raw_mode;
 use headers::HeaderValue;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{http, Body, Client, Method, Request, Response, Server};
 
+use frontend::Tui;
 use resolver::{ProxyPACRule, ProxyResolver};
 use serde::{Deserialize, Serialize};
 use std::env;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::time::Instant;
 use url::Url;
+use uuid::Uuid;
 
 use tokio::net::TcpStream;
 
 use act_zero::runtimes::tokio::spawn_actor;
 use act_zero::*;
 use clap::Parser;
-use tracing::{error, info, instrument};
+use tracing::{error, instrument};
 use tracing_subscriber;
+
+use crate::frontend::StreamInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProxyConfig {
@@ -74,7 +80,9 @@ fn remote_host(req: &Request<Body>) -> Url {
 
 pub struct ClientSession {
     started_at: Instant,
+    id: Uuid,
     resolver: Addr<ProxyResolver>,
+    tui: Addr<Tui>,
     credentials: Addr<CredentialProvider>,
 }
 
@@ -86,10 +94,16 @@ impl std::fmt::Debug for ClientSession {
 
 impl Actor for ClientSession {}
 impl ClientSession {
-    fn new(resolver: Addr<ProxyResolver>, credentials: Addr<CredentialProvider>) -> Self {
+    fn new(
+        tui: Addr<Tui>,
+        resolver: Addr<ProxyResolver>,
+        credentials: Addr<CredentialProvider>,
+    ) -> Self {
         ClientSession {
+            id: Uuid::new_v4(),
             started_at: Instant::now(),
             resolver,
+            tui,
             credentials,
         }
     }
@@ -108,7 +122,16 @@ impl ClientSession {
             .unwrap();
 
         let remote_host_addr = host_addr(req.uri()).unwrap_or("_".to_string());
-
+        call!(self.tui.push(StreamInfo {
+            id: self.id,
+            method: req.method().to_string(),
+            remote: remote_host_addr.clone(),
+            upstream: upstream_url.to_string(),
+            opened_at: self.started_at,
+            closed_at: None,
+        }))
+        .await
+        .unwrap();
         let res = Produces::ok(match upstream_url.scheme() {
             "direct" => self.forward(client, req, remote_host_addr).await?,
             "http" => {
@@ -126,10 +149,6 @@ impl ClientSession {
             _ => panic!(),
         });
 
-        info!(
-            "request processed in {}µs",
-            self.started_at.elapsed().as_micros()
-        );
         res
     }
     #[instrument]
@@ -140,6 +159,9 @@ impl ClientSession {
         remote_host: String,
     ) -> core::result::Result<Response<Body>, hyper::Error> {
         if Method::CONNECT == req.method() {
+            let id = self.id.clone();
+            let tui = self.tui.clone();
+
             tokio::spawn(async move {
                 match hyper::upgrade::on(req).await {
                     Ok(mut upgraded) => {
@@ -148,13 +170,17 @@ impl ClientSession {
                             .expect("remote connection failed");
                         if let Err(_) = tunnel(&mut upgraded, &mut server).await {};
                     }
-                    Err(e) => error!("upgrade error: {}", e),
+                    Err(_) => {}
                 }
+                call!(tui.remove(id)).await.unwrap();
             });
 
             Ok(Response::new(Body::empty()))
         } else {
-            client.request(req).await
+            let resp = client.request(req).await;
+            call!(self.tui.remove(self.id)).await.unwrap();
+
+            resp
         }
     }
     #[instrument]
@@ -179,6 +205,9 @@ impl ClientSession {
                     HeaderValue::from_bytes(creds.as_bytes()).expect("msg"),
                 );
             }
+            let id = self.id.clone();
+            let tui = self.tui.clone();
+
             tokio::task::spawn(async move {
                 let res = client.request(server_req).await.expect("msg");
                 match hyper::upgrade::on(res).await {
@@ -192,10 +221,13 @@ impl ClientSession {
                     },
                     Err(e) => error!("upgrade error: {}", e),
                 }
+                call!(tui.remove(id)).await.unwrap();
             });
             Ok(Response::new(Body::empty()))
         } else {
-            client.request(req).await
+            let resp = client.request(req).await;
+            call!(self.tui.remove(self.id)).await.unwrap();
+            resp
         }
     }
 }
@@ -219,6 +251,7 @@ async fn main() {
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
     let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules));
+    let tui = spawn_actor(Tui::default());
     let resolver = spawn_actor(ProxyResolver::from_beacon_rules(cfg.pac_rules));
 
     let connector = ProxyConnector::from(resolver.clone());
@@ -232,10 +265,14 @@ async fn main() {
         let client = client.clone();
         let resolver = resolver.clone();
         let credentials = credentials.clone();
+        let tui = tui.clone();
         async move {
             Ok::<_, Infallible>(service_fn(move |req| {
-                let session =
-                    spawn_actor(ClientSession::new(resolver.clone(), credentials.clone()));
+                let session = spawn_actor(ClientSession::new(
+                    tui.clone(),
+                    resolver.clone(),
+                    credentials.clone(),
+                ));
                 call!(session.proxy(client.clone(), req))
             }))
         }
@@ -246,9 +283,8 @@ async fn main() {
         .http1_title_case_headers(true)
         .serve(make_service);
 
-    println!("Listening on http://{}", listen_addr);
-
     if let Err(e) = server.await {
-        eprintln!("server error: {}", e);
+        error!("server error: {}", e);
     }
+    disable_raw_mode().expect("failed to restore terminal");
 }
