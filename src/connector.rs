@@ -50,12 +50,14 @@ impl Service<Uri> for ProxyConnector {
                     aut.port_u16().unwrap_or(80)
                 ))
                 .await?
-                .into()),
+                .into())
+                .map(|v: ProxyConnection<TcpStream>| v.into_direct()),
                 "http" => Ok(TcpStream::connect(ProxyResolver::resolve_proxy_for_addr(
                     upstream_url,
                 ))
                 .await?
-                .into()),
+                .into())
+                .map(|v: ProxyConnection<TcpStream>| v.into_proxy()),
                 _ => panic!(),
             }
         })

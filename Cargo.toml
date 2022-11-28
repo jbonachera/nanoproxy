@@ -27,3 +27,6 @@ log = { version = "0.4", features = ["kv_unstable"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 serde = { version = "1.0.147", features = ["derive"] }
+tui = "0.19.0"
+crossterm = "0.25.0"
+uuid = { version = "1.2.2", features = ["v4"] }

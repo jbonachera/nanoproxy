@@ -1,4 +1,3 @@
-
 name: Rust
 
 on: [push]
@@ -46,7 +45,6 @@ jobs:
           file: target/release/nanoproxy
           asset_name: nanoproxy-linux
           tag: build-${{ github.ref }}
-          overwrite: true
 
   build-mac:
     runs-on: macos-latest
@@ -79,3 +77,4 @@ jobs:
           file: target/release/nanoproxy
           asset_name: nanoproxy-darwin
           tag: build-${{ github.ref }}
+          overwrite: true
