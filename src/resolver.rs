@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use reqwest::ClientBuilder;
 use serde::{Deserialize, Serialize};
 use std::{error, net::ToSocketAddrs, num::NonZeroUsize, time::Duration};
-use tracing::debug;
+use tracing::info;
 use url::Url;
 
 use act_zero::{runtimes::tokio::Timer, timer::Tick, Actor, ActorResult, Addr, Produces, WeakAddr};
@@ -74,7 +74,7 @@ impl ProxyResolver {
     }
 
     async fn load_pac(&mut self, pac_url: &str) -> Result<String, Box<dyn error::Error>> {
-        debug!("attempting to download PAC file at {pac_url}");
+        info!("attempting to download PAC file at {pac_url}");
         let pac_file = ClientBuilder::new()
             .no_proxy()
             .build()?
@@ -84,7 +84,7 @@ impl ProxyResolver {
             .text()
             .await?;
         self.pac_cache.put(pac_url.to_string(), pac_file.clone());
-        debug!("loaded PAC file ({}B)", pac_file.len());
+        info!("loaded PAC file ({}B)", pac_file.len());
         Ok(pac_file)
     }
     async fn resolve_proxy_from_pac(
