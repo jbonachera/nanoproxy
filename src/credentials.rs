@@ -1,4 +1,4 @@
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::HashMap, num::NonZeroUsize, process::Command};
 
 use act_zero::{Actor, ActorResult, Produces};
 use lru::LruCache;
@@ -11,7 +11,23 @@ fn encode_credentials(username: &str, password: &str) -> String {
 pub struct ProxyAuthRule {
     remote_pattern: String,
     username: String,
-    password: String,
+    password_command: String,
+}
+
+impl ProxyAuthRule {
+    fn password(&self) -> String {
+        String::from_utf8(
+            Command::new("sh")
+                .arg("-c")
+                .arg(self.password_command.to_owned())
+                .output()
+                .expect("password command failed")
+                .stdout,
+        )
+        .expect("password command failed")
+        .trim_end()
+        .to_string()
+    }
 }
 
 impl Default for ProxyAuthRule {
@@ -19,7 +35,7 @@ impl Default for ProxyAuthRule {
         Self {
             remote_pattern: ".example.net".into(),
             username: "username".into(),
-            password: "password".into(),
+            password_command: "echo password".into(),
         }
     }
 }
@@ -43,10 +59,10 @@ impl CredentialProvider {
     pub fn from_auth_rules(rules: Vec<ProxyAuthRule>) -> Self {
         let mut credential_provider = Self::default();
         rules.into_iter().for_each(|v| {
-            credential_provider.basic_rules.insert(
-                v.remote_pattern,
-                encode_credentials(&v.username, &v.password),
-            );
+            let password = v.password();
+            credential_provider
+                .basic_rules
+                .insert(v.remote_pattern, encode_credentials(&v.username, &password));
         });
         credential_provider
     }
