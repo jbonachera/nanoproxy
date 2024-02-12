@@ -293,7 +293,11 @@ async fn main() {
             server.local_addr().ip(),
             server.local_addr().port()
         );
-        println!("Configuration loaded from {:#?}", confy::get_configuration_file_path("nanoproxy", "nanoproxy").expect("failed to load config"));
+        println!(
+            "Configuration loaded from {:#?}",
+            confy::get_configuration_file_path("nanoproxy", "nanoproxy")
+                .expect("failed to load config")
+        );
         println!("");
         println!(
             "export http_proxy=http://{}:{};",

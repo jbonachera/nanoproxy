@@ -13,7 +13,7 @@ pub fn proxy_for_url(pac_file: String, url: &Url) -> Result<String> {
 
     let eval_result: JsValue = script.call(
         "main",
-        &vec![url.to_string(), url.host().unwrap().to_string()],
+        (url.to_string(), url.host().unwrap().to_string()),
     )?;
 
     let first_proxy = eval_result
