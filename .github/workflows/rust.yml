@@ -1,79 +1,107 @@
-name: Rust
+name: Release
 
-on: [push]
+on: push
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  rustfmt:
+  release-x86:
+    name: ${{ matrix.target }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-gnu
+            archive_name: nanoproxy-windows-x86
+            file_extension: .exe
+          - target: x86_64-unknown-linux-musl
+            archive_name: nanoproxy-linux-x86
+
     steps:
-      - uses: actions/checkout@v1
-      - run: rustup component add rustfmt
-      - run: cargo fmt -- --check
+    - uses: actions/checkout@v4
 
-  build:
-    runs-on: ubuntu-latest
+    - name: Install dependencies
+      run: sudo apt install mingw-w64
 
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v1
-      # cache the build assets so they dont recompile every time.
-      - name: Cache Rust dependencies
-        uses: actions/cache@v1.0.1
-        with:
-          path: target
-          key: ${{ runner.OS }}-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.OS }}-build-
-      - name: Install latest rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: beta
-          default: true
-          override: true
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update \
-          && sudo apt-get install -y \
-          libdbus-1-dev
-      - name: Build
-        run: cargo build --all --release && strip target/release/nanoproxy
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        toolchain: stable
+        targets: x86_64-pc-windows-gnu, x86_64-unknown-linux-musl
 
-      - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v1-release
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/release/nanoproxy
-          asset_name: nanoproxy-linux
-          tag: build-${{ github.ref }}
+    - name: Build
+      run: cargo build --release --target ${{ matrix.target }}
 
-  build-mac:
+    - name: Make zip
+      run: |
+        mkdir ${{ matrix.archive_name }}
+        cp target/${{ matrix.target }}/release/nanoproxy${{ matrix.file_extension }} ${{ matrix.archive_name }}
+        zip -r ${{ matrix.archive_name }}.zip ${{ matrix.archive_name }}
+
+    - name: Make SHA256 checksum
+      run: sha256sum ${{ matrix.archive_name }}.zip > ${{ matrix.archive_name }}.zip.sha256sum
+
+    - name: Upload zip to Release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ${{ matrix.archive_name }}.zip
+        tag: ${{ github.ref }}
+
+    - name: Upload SHA256 to Release
+      uses: svenstaro/upload-release-action@v2
+      with:
+        repo_token: ${{ secrets.GITHUB_TOKEN }}
+        file: ${{ matrix.archive_name }}.zip.sha256sum
+        tag: ${{ github.ref }}
+
+  release-macos-universal:
+    name: macos-universal
     runs-on: macos-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v1
-      - name: Cache Rust dependencies
-        uses: actions/cache@v1.0.1
-        with:
-          path: target
-          key: ${{ runner.OS }}-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.OS }}-build-
-      - name: Install latest rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: stable-aarch64-apple-darwin
-          target: aarch64-apple-darwin
-          default: true
-          override: true
+      - uses: actions/checkout@v4
 
-      - name: Build for mac
-        run: cargo build --all --release && strip target/release/nanoproxy
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
 
-      - name: Upload binaries to release
-        uses: svenstaro/upload-release-action@v1-release
+      - name: Build aarch64
+        run: cargo build --release --target aarch64-apple-darwin
+
+      - name: Build x86
+        run: cargo build --release --target x86_64-apple-darwin
+
+      - run: mkdir -p target/universal/release
+      - name: Combine Binaries into Universal Binary
+        run: >
+          lipo -create -output
+          "target/universal/release/nanoproxy"
+          "target/x86_64-apple-darwin/release/nanoproxy"
+          "target/aarch64-apple-darwin/release/nanoproxy"
+
+      - name: Make universal zip
+        run: |
+          mkdir nanoproxy-macos-universal
+          cp target/aarch64-apple-darwin/release/nanoproxy nanoproxy-macos-universal
+          zip -r nanoproxy-macos-universal.zip nanoproxy-macos-universal
+
+      - name: Make SHA256 checksum
+        run: shasum -a 256 nanoproxy-macos-universal.zip > nanoproxy-macos-universal.zip.sha256sum
+
+      - name: Upload universal to Release
+        uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/release/nanoproxy
-          asset_name: nanoproxy-darwin
-          tag: build-${{ github.ref }}
-          overwrite: true
+          file: nanoproxy-macos-universal.zip
+          tag: ${{ github.ref }}
+
+      - name: Upload SHA256 to Release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: nanoproxy-macos-universal.zip.sha256sum
+          tag: ${{ github.ref }}
