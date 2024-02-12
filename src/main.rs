@@ -250,7 +250,7 @@ impl ProxyResolver {}
 
 #[tokio::main]
 async fn main() {
-    let cfg = confy::load::<ProxyConfig>("nanoproxy").expect("failed to load config");
+    let cfg = confy::load::<ProxyConfig>("nanoproxy", "nanoproxy").expect("failed to load config");
     tracing_subscriber::fmt::init();
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
@@ -293,6 +293,7 @@ async fn main() {
             server.local_addr().ip(),
             server.local_addr().port()
         );
+        println!("Configuration loaded from {:#?}", confy::get_configuration_file_path("nanoproxy", "nanoproxy").expect("failed to load config"));
         println!("");
         println!(
             "export http_proxy=http://{}:{};",
