@@ -52,7 +52,7 @@ function isInNet(ipaddr, pattern, maskstr) {
 }
 
 function isPlainHostName(host) {
-  return (host.search(/\./) == -1);
+  return !host.includes('.')
 }
 
 function isResolvable(host) {
@@ -230,9 +230,4 @@ function timeRange() {
   return (date1 <= date2) ? (date1 <= date) && (date <= date2)
     : (date2 >= date) || (date >= date1);
 
-}
-
-
-function main(args) {
-  return FindProxyForURL(...args);
 }

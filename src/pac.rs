@@ -10,11 +10,13 @@ pub fn proxy_for_url(pac_file: String, url: &Url) -> Result<String> {
     let pac_payload = [pac_file.as_str(), PAC_UTILS].join("\n");
 
     let mut script = Script::from_string(pac_payload.as_str())?;
+    let host =  url.host().unwrap().to_string();
 
     let eval_result: JsValue = script.call(
-        "main",
-        (url.to_string(), url.host().unwrap().to_string()),
+        "FindProxyForURL",
+        (url.to_string(), host),
     )?;
+
 
     let first_proxy = eval_result
         .to_string()
