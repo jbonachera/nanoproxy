@@ -34,6 +34,10 @@ function convert_addr(ipchars) {
   return result;
 }
 
+function dnsResolve(domain) {
+  return "127.0.0.1"
+}
+
 function isInNet(ipaddr, pattern, maskstr) {
   if (!isValidIpAddress(pattern) || !isValidIpAddress(maskstr)) {
     return false;
