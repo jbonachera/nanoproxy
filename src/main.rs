@@ -14,7 +14,7 @@ use headers::HeaderValue;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{http, Body, Client, Method, Request, Response, Server};
 
-use resolver::{ProxyPACRule, ProxyResolver};
+use resolver::{BeaconPoller, ProxyPACRule, ProxyResolver};
 use serde::{Deserialize, Serialize};
 use std::env;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -257,7 +257,9 @@ async fn main() {
 
     let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules));
     let connection_tracker = spawn_actor(ConnectionTracker::default());
-    let resolver = spawn_actor(ProxyResolver::from_beacon_rules(cfg.pac_rules));
+    let resolver = spawn_actor(ProxyResolver::default());
+    let beacon_poller = spawn_actor(BeaconPoller::from_beacon_rules(cfg.pac_rules, resolver.clone()));
+
 
     let connector = ProxyConnector::from(resolver.clone());
 
