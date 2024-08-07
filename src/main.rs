@@ -14,7 +14,7 @@ use headers::HeaderValue;
 use hyper::service::{make_service_fn, service_fn};
 use hyper::{http, Body, Client, Method, Request, Response, Server};
 
-use resolver::{BeaconPoller, ProxyPACRule, ProxyResolver};
+use resolver::{BeaconPoller, ProxyPACRule, ProxyResolver, ResolvConfListener, ResolvConfRule};
 use serde::{Deserialize, Serialize};
 use std::env;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -36,14 +36,16 @@ use crate::tracker::StreamInfo;
 #[derive(Debug, Serialize, Deserialize)]
 struct ProxyConfig {
     auth_rules: Vec<ProxyAuthRule>,
-    pac_rules: Vec<ProxyPACRule>,
+    pac_rules: Option<Vec<ProxyPACRule>>,
+    resolvconf_rules: Option<Vec<ResolvConfRule>>,
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
             auth_rules: vec![ProxyAuthRule::default()],
-            pac_rules: vec![ProxyPACRule::default()],
+            pac_rules: Some(vec![ProxyPACRule::default()]),
+            resolvconf_rules: Some(vec![ResolvConfRule::default()]),
         }
     }
 }
@@ -258,8 +260,12 @@ async fn main() {
     let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules));
     let connection_tracker = spawn_actor(ConnectionTracker::default());
     let resolver = spawn_actor(ProxyResolver::default());
-    let beacon_poller = spawn_actor(BeaconPoller::from_beacon_rules(cfg.pac_rules, resolver.clone()));
-
+    if let Some(v) = cfg.pac_rules {
+        let _beacon_poller = spawn_actor(BeaconPoller::from_beacon_rules(v, resolver.clone()));
+    }
+    if let Some(v) = cfg.resolvconf_rules {
+        let _resolvconf_listener = spawn_actor(ResolvConfListener::from_rules(v, resolver.clone()));
+    }
 
     let connector = ProxyConnector::from(resolver.clone());
 
