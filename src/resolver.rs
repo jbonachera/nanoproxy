@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use ipnet::Ipv4Net;
-use log::warn;
+use log::{debug, warn};
 use reqwest::ClientBuilder;
 use resolv_conf::ScopedIp;
 use serde::{Deserialize, Serialize};
@@ -59,7 +59,7 @@ impl Default for ProxyResolver {
 
 impl ProxyResolver {
     async fn load_pac(&mut self, pac_url: &str) -> Result<String, Box<dyn error::Error>> {
-        info!("attempting to download PAC file at {pac_url}");
+        debug!("attempting to download PAC file at {pac_url}");
         let pac_file = ClientBuilder::new()
             .no_proxy()
             .build()?

@@ -35,7 +35,7 @@ use crate::tracker::StreamInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProxyConfig {
-    auth_rules: Vec<ProxyAuthRule>,
+    auth_rules: Option<Vec<ProxyAuthRule>>,
     pac_rules: Option<Vec<ProxyPACRule>>,
     resolvconf_rules: Option<Vec<ResolvConfRule>>,
 }
@@ -43,7 +43,7 @@ struct ProxyConfig {
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
-            auth_rules: vec![ProxyAuthRule::default()],
+            auth_rules: Some(vec![ProxyAuthRule::default()]),
             pac_rules: Some(vec![ProxyPACRule::default()]),
             resolvconf_rules: Some(vec![ResolvConfRule::default()]),
         }
@@ -215,6 +215,7 @@ impl ClientSession {
 
             tokio::task::spawn(async move {
                 let res = client.request(server_req).await.expect("msg");
+                let uri = req.uri().clone();
                 match hyper::upgrade::on(res).await {
                     Ok(mut server) => match hyper::upgrade::on(req).await {
                         Ok(mut upgraded) => {
@@ -222,9 +223,9 @@ impl ClientSession {
                                 error!("server io error: {}", e);
                             };
                         }
-                        Err(e) => error!("upgrade error: {}", e),
+                        Err(e) => error!("server refused to upgade to CONNECT {}: {}", uri, e),
                     },
-                    Err(e) => error!("upgrade error: {}", e),
+                    Err(e) => error!("client refused to upgade to CONNECT {}: {}", uri, e),
                 }
                 call!(connection_tracker.remove(id)).await.unwrap();
             });
@@ -257,7 +258,7 @@ async fn main() {
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
-    let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules));
+    let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules.unwrap_or(vec![ProxyAuthRule::default()])));
     let connection_tracker = spawn_actor(ConnectionTracker::default());
     let resolver = spawn_actor(ProxyResolver::default());
     if let Some(v) = cfg.pac_rules {
