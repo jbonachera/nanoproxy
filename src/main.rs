@@ -324,6 +324,22 @@ async fn main() {
             server.local_addr().port()
         );
         println!(
+            "export HTTP_PROXY=http://{}:{};",
+            server.local_addr().ip(),
+            server.local_addr().port()
+        );
+        println!(
+            "export HTTPS_PROXY=http://{}:{};",
+            server.local_addr().ip(),
+            server.local_addr().port()
+        );
+        println!(
+            "export ALL_PROXY=http://{}:{};",
+            server.local_addr().ip(),
+            server.local_addr().port()
+        );
+
+        println!(
         "export no_proxy=localhost,127.0.0.0/8,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16;");
         println!("");
         println!("Connection logs will appear below.");
