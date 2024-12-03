@@ -7,7 +7,7 @@ Download the latest release from https://github.com/jbonachera/nanoproxy/release
 Unzip the file, then make the binary executable. On macOS, you may need to remove the Apple quarantine attribute.
 
 ```shell
-curl -O https://github.com/jbonachera/nanoproxy/releases/download/master/nanoproxy-macos-universal.zip
+curl -LO https://github.com/jbonachera/nanoproxy/releases/download/master/nanoproxy-macos-universal.zip
 unzip nanoproxy-macos-universal.zip
 cd nanoproxy-macos-universal/
 xattr -d com.apple.quarantine ./nanoproxy
