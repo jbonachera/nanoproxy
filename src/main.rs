@@ -220,7 +220,7 @@ impl ClientSession {
                     Ok(mut server) => match hyper::upgrade::on(req).await {
                         Ok(mut upgraded) => {
                             if let Err(e) = tunnel(&mut upgraded, &mut server).await {
-                                error!("server io error: {}", e);
+                                error!("{}: server io error: {}", uri,  e);
                             };
                         }
                         Err(e) => error!("server refused to upgade to CONNECT {}: {}", uri, e),
