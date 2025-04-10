@@ -69,7 +69,7 @@ impl ProxyResolver {
             .text()
             .await?;
         self.pac_cache.put(pac_url.to_string(), pac_file.clone());
-        info!("loaded PAC file ({} bytes)", pac_file.len());
+        info!("loaded PAC file from {} ({} bytes)",pac_url, pac_file.len());
         Ok(pac_file)
     }
     async fn resolve_proxy_from_pac(

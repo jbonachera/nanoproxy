@@ -25,5 +25,9 @@ pub fn proxy_for_url(pac_file: String, url: &Url) -> Result<String> {
         .nth(0)
         .unwrap()
         .to_string();
-    Ok(format!("http://{first_proxy}"))
+
+    match first_proxy.as_str() {
+        "DIRECT" => Ok("direct://".to_owned()),
+        v => Ok(format!("http://{v}"))
+    }
 }
