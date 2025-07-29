@@ -81,7 +81,28 @@ impl ProxyResolver {
             Some(v) => v.to_owned(),
             None => self.load_pac(pac_url).await?,
         };
-        pac::proxy_for_url(pac_file, url)
+        let proxies = pac::proxy_for_url(pac_file, url)?;
+        if proxies.is_empty() {
+            Ok("direct://".to_owned())
+        } else {
+            Ok(proxies[0].clone())
+        }
+    }
+    
+    pub async fn resolve_all_proxies_for_url(
+        &mut self,
+        url: &Url,
+    ) -> Result<Vec<String>, Box<dyn error::Error>> {
+        match self.pac_url.clone() {
+            Some(pac_url) => {
+                let pac_file = match self.pac_cache.get(&pac_url) {
+                    Some(v) => v.to_owned(),
+                    None => self.load_pac(&pac_url).await?,
+                };
+                pac::proxy_for_url(pac_file, url)
+            }
+            None => Ok(vec!["direct://".to_owned()]),
+        }
     }
 
     async fn load_pac_url(&mut self, url: Option<String>) -> ActorResult<()> {
@@ -104,6 +125,26 @@ impl ProxyResolver {
         }
 
         Produces::ok("direct://".parse()?)
+    }
+    
+    pub async fn get_all_proxies_for_url(&mut self, url: Url) -> ActorResult<Vec<Url>> {
+        match self.pac_url.clone() {
+            Some(pac_url) => {
+                let proxies = self.resolve_all_proxies_for_url(&url).await.unwrap_or_else(|_| vec!["direct://".to_owned()]);
+                let proxy_urls: Vec<Url> = proxies.into_iter()
+                    .filter_map(|p| p.parse().ok())
+                    .collect();
+                
+                if proxy_urls.is_empty() {
+                    Produces::ok(vec!["direct://".parse()?])
+                } else {
+                    Produces::ok(proxy_urls)
+                }
+            }
+            None => {
+                Produces::ok(vec!["direct://".parse()?])
+            }
+        }
     }
     pub fn resolve_proxy_for_addr(upstream_url: Url) -> String {
         format!(
