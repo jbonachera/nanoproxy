@@ -72,10 +72,7 @@ impl CredentialProvider {
         }
         match self.basic_rules.get(host) {
             Some(v) => Some(v.clone()),
-            None => self.basic_credentials_for(
-                host.trim_start_matches(".")
-                    .trim_start_matches(|ch| ch != '.'),
-            ),
+            None => self.basic_credentials_for(host.trim_start_matches(".").trim_start_matches(|ch| ch != '.')),
         }
     }
     pub async fn credentials_for(&mut self, host: String) -> ActorResult<Option<String>> {

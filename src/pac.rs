@@ -12,13 +12,11 @@ pub fn proxy_for_url(pac_file: String, url: &Url) -> Result<Vec<String>> {
     let mut script = Script::from_string(pac_payload.as_str())?;
     let host = url.host().unwrap().to_string();
 
-    let eval_result: JsValue = script.call(
-        "FindProxyForURL",
-        (url.to_string(), host),
-    )?;
+    let eval_result: JsValue = script.call("FindProxyForURL", (url.to_string(), host))?;
 
     let proxies: Vec<String> = eval_result
-        .to_string().replace('"', "")
+        .to_string()
+        .replace('"', "")
         .split(";")
         .map(|v| v.trim())
         .filter(|v| !v.is_empty())
@@ -32,7 +30,7 @@ pub fn proxy_for_url(pac_file: String, url: &Url) -> Result<Vec<String>> {
                     } else {
                         "direct://".to_owned()
                     }
-                },
+                }
                 _ => "direct://".to_owned(),
             }
         })

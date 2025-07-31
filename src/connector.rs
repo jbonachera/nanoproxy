@@ -2,6 +2,7 @@ use crate::connection::ProxyConnection;
 use crate::resolver::ProxyResolver;
 use act_zero::{call, Addr};
 use futures::Future;
+use std::io::Error;
 use std::pin::Pin;
 use std::task::{self, Poll};
 use std::time::Duration;
@@ -27,13 +28,9 @@ impl From<Addr<ProxyResolver>> for ProxyConnector {
 impl Service<Uri> for ProxyConnector {
     type Response = ProxyConnection<TcpStream>;
     type Error = std::io::Error;
-    type Future =
-        Pin<Box<dyn Future<Output = core::result::Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = core::result::Result<Self::Response, Self::Error>> + Send>>;
 
-    fn poll_ready(
-        &mut self,
-        _: &mut task::Context<'_>,
-    ) -> Poll<core::result::Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<core::result::Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
@@ -44,83 +41,77 @@ impl Service<Uri> for ProxyConnector {
             let proxy_urls: Vec<Url> = call!(resolver.get_all_proxies_for_url(url))
                 .await
                 .unwrap_or_else(|_| vec!["direct://".parse().unwrap()]);
-            
-            let aut = uri.authority().unwrap();
-            
+
+            let authority = uri.authority().unwrap();
+
             // If we have at least one proxy, try it with timeout
             if !proxy_urls.is_empty() {
                 let first_proxy_url = &proxy_urls[0];
-                
+
                 match first_proxy_url.scheme() {
                     "direct" => {
-                        let addr = format!(
-                            "{}:{}",
-                            aut.host(),
-                            aut.port_u16().unwrap_or(80)
-                        );
-                        return Ok(TcpStream::connect(addr)
-                            .await?
-                            .into())
-                            .map(|v: ProxyConnection<TcpStream>| v.into_direct());
-                    },
+                        let addr = format!("{}:{}", authority.host(), authority.port_u16().unwrap_or(80));
+                        return Self::connect_with_timeout_direct(&addr).await;
+                    }
                     "http" => {
                         let addr = ProxyResolver::resolve_proxy_for_addr(first_proxy_url.clone());
-                        
-                        // Try to connect to the first proxy with a 500ms timeout
-                        match timeout(Duration::from_millis(80), TcpStream::connect(&addr)).await {
-                            Ok(result) => {
-                                return match result {
-                                    Ok(stream) => Ok(stream.into())
-                                        .map(|v: ProxyConnection<TcpStream>| v.into_proxy()),
-                                    Err(e) => Err(e),
-                                };
-                            },
+
+                        return match Self::connect_with_timeout_through_proxy(&addr).await {
+                            result @ Ok(_) => result,
                             Err(_) => {
-                                log::info!("Proxy timeout, falling back to second proxy");
-                                // Timeout occurred, try the second proxy if available
+                                // Timeout occurred, try the second upstream if available
                                 if proxy_urls.len() > 1 {
                                     let second_proxy_url = &proxy_urls[1];
+                                    log::info!("Proxy timeout, falling back to proxy {second_proxy_url}");
                                     if second_proxy_url.scheme() == "http" {
-                                        let second_addr = ProxyResolver::resolve_proxy_for_addr(second_proxy_url.clone());
-                                        return Ok(TcpStream::connect(second_addr)
-                                            .await?
-                                            .into())
-                                            .map(|v: ProxyConnection<TcpStream>| v.into_proxy());
+                                        return Self::connect_with_timeout_through_proxy(
+                                            &ProxyResolver::resolve_proxy_for_addr(second_proxy_url.clone()),
+                                        )
+                                        .await;
                                     } else if second_proxy_url.scheme() == "direct" {
-                                        let addr = format!(
+                                        return Self::connect_with_timeout_through_proxy(&format!(
                                             "{}:{}",
-                                            aut.host(),
-                                            aut.port_u16().unwrap_or(80)
-                                        );
-                                        return Ok(TcpStream::connect(addr)
-                                            .await?
-                                            .into())
-                                            .map(|v: ProxyConnection<TcpStream>| v.into_direct());
+                                            authority.host(),
+                                            authority.port_u16().unwrap_or(80)
+                                        ))
+                                        .await;
                                     }
                                 }
-                                
-                                // If no second proxy or second proxy failed, try the first proxy again without timeout
-                                return Ok(TcpStream::connect(addr)
-                                    .await?
-                                    .into())
-                                    .map(|v: ProxyConnection<TcpStream>| v.into_proxy());
+
+                                // If no second upstream, fallback on the first proxy
+                                return Self::connect_with_timeout_through_proxy(&addr).await;
                             }
-                        }
-                    },
+                        };
+                    }
                     _ => panic!(),
                 }
             }
-            
+
             // Default to direct connection if no proxies
-            let addr = format!(
+            return Self::connect_with_timeout_direct(&format!(
                 "{}:{}",
-                aut.host(),
-                aut.port_u16().unwrap_or(80)
-            );
-            Ok(TcpStream::connect(addr)
-                .await?
-                .into())
-                .map(|v: ProxyConnection<TcpStream>| v.into_direct())
+                authority.host(),
+                authority.port_u16().unwrap_or(80)
+            ))
+            .await;
         })
+    }
+}
+
+impl ProxyConnector {
+    const TIMEOUT_DURATION: Duration = Duration::from_millis(200);
+
+    async fn connect_with_timeout_through_proxy(addr: &String) -> Result<ProxyConnection<TcpStream>, Error> {
+        timeout(Self::TIMEOUT_DURATION, TcpStream::connect(&addr))
+            .await?
+            .map(|stream| stream.into())
+            .map(|v: ProxyConnection<TcpStream>| v.into_proxy())
+    }
+
+    async fn connect_with_timeout_direct(addr: &String) -> Result<ProxyConnection<TcpStream>, Error> {
+        timeout(Self::TIMEOUT_DURATION, TcpStream::connect(&addr))
+            .await?
+            .map(|stream| stream.into())
+            .map(|v: ProxyConnection<TcpStream>| v.into_direct())
     }
 }

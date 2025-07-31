@@ -15,13 +15,11 @@ use crate::pac;
 use notify_debouncer_mini::new_debouncer;
 use std::io::Read;
 
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ProxyPACRule {
     beacon_host: String,
     pac_url: String,
 }
-
 
 impl Default for ProxyPACRule {
     fn default() -> Self {
@@ -56,7 +54,6 @@ impl Default for ProxyResolver {
     }
 }
 
-
 impl ProxyResolver {
     async fn load_pac(&mut self, pac_url: &str) -> Result<String, Box<dyn error::Error>> {
         debug!("attempting to download PAC file at {pac_url}");
@@ -69,14 +66,10 @@ impl ProxyResolver {
             .text()
             .await?;
         self.pac_cache.put(pac_url.to_string(), pac_file.clone());
-        info!("loaded PAC file from {} ({} bytes)",pac_url, pac_file.len());
+        info!("loaded PAC file from {} ({} bytes)", pac_url, pac_file.len());
         Ok(pac_file)
     }
-    async fn resolve_proxy_from_pac(
-        &mut self,
-        pac_url: &str,
-        url: &Url,
-    ) -> Result<String, Box<dyn error::Error>> {
+    async fn resolve_proxy_from_pac(&mut self, pac_url: &str, url: &Url) -> Result<String, Box<dyn error::Error>> {
         let pac_file = match self.pac_cache.get(pac_url) {
             Some(v) => v.to_owned(),
             None => self.load_pac(pac_url).await?,
@@ -88,11 +81,8 @@ impl ProxyResolver {
             Ok(proxies[0].clone())
         }
     }
-    
-    pub async fn resolve_all_proxies_for_url(
-        &mut self,
-        url: &Url,
-    ) -> Result<Vec<String>, Box<dyn error::Error>> {
+
+    pub async fn resolve_all_proxies_for_url(&mut self, url: &Url) -> Result<Vec<String>, Box<dyn error::Error>> {
         match self.pac_url.clone() {
             Some(pac_url) => {
                 let pac_file = match self.pac_cache.get(&pac_url) {
@@ -113,55 +103,41 @@ impl ProxyResolver {
 
     pub async fn resolve_proxy_for_url(&mut self, url: Url) -> ActorResult<Url> {
         match self.pac_url.clone() {
-            Some(pac_url) => {
-                return Produces::ok(
-                    self.resolve_proxy_from_pac(&pac_url, &url)
-                        .await
-                        .unwrap()
-                        .parse()?,
-                )
-            }
+            Some(pac_url) => return Produces::ok(self.resolve_proxy_from_pac(&pac_url, &url).await.unwrap().parse()?),
             None => {}
         }
 
         Produces::ok("direct://".parse()?)
     }
-    
+
     pub async fn get_all_proxies_for_url(&mut self, url: Url) -> ActorResult<Vec<Url>> {
         match self.pac_url.clone() {
-            Some(pac_url) => {
-                let proxies = self.resolve_all_proxies_for_url(&url).await.unwrap_or_else(|_| vec!["direct://".to_owned()]);
-                let proxy_urls: Vec<Url> = proxies.into_iter()
-                    .filter_map(|p| p.parse().ok())
-                    .collect();
-                
+            Some(_) => {
+                let proxies = self
+                    .resolve_all_proxies_for_url(&url)
+                    .await
+                    .unwrap_or_else(|_| vec!["direct://".to_owned()]);
+                let proxy_urls: Vec<Url> = proxies.into_iter().filter_map(|p| p.parse().ok()).collect();
+
                 if proxy_urls.is_empty() {
                     Produces::ok(vec!["direct://".parse()?])
                 } else {
                     Produces::ok(proxy_urls)
                 }
             }
-            None => {
-                Produces::ok(vec!["direct://".parse()?])
-            }
+            None => Produces::ok(vec!["direct://".parse()?]),
         }
     }
     pub fn resolve_proxy_for_addr(upstream_url: Url) -> String {
-        format!(
-            "{}:{}",
-            upstream_url.host().unwrap(),
-            upstream_url.port().unwrap_or(80)
-        )
-        .to_string()
+        format!("{}:{}", upstream_url.host().unwrap(), upstream_url.port().unwrap_or(80)).to_string()
     }
 }
-
 
 pub struct BeaconPoller {
     pac_rules: Vec<ProxyPACRule>,
     timer: Timer,
     addr: WeakAddr<Self>,
-    resolver: Addr<ProxyResolver>
+    resolver: Addr<ProxyResolver>,
 }
 
 #[async_trait]
@@ -169,12 +145,10 @@ impl Actor for BeaconPoller {
     async fn started(&mut self, addr: Addr<Self>) -> ActorResult<()> {
         self.addr = addr.downgrade();
 
-        self.timer
-            .set_interval_weak(self.addr.clone(), Duration::from_secs(3));
+        self.timer.set_interval_weak(self.addr.clone(), Duration::from_secs(3));
         Produces::ok(())
     }
 }
-
 
 impl Default for BeaconPoller {
     fn default() -> Self {
@@ -205,7 +179,6 @@ impl BeaconPoller {
         s
     }
 
-
     fn select_pac_url(&self) -> Option<String> {
         for (_, rule) in self.pac_rules.iter().enumerate() {
             match rule.beacon_host.to_socket_addrs() {
@@ -220,15 +193,12 @@ impl BeaconPoller {
         call!(self.resolver.load_pac_url(self.select_pac_url())).await?;
         Produces::ok(())
     }
-
 }
-
-
 
 pub struct ResolvConfListener {
     resolvconf_rules: Vec<ResolvConfRule>,
     addr: WeakAddr<Self>,
-    resolver: Addr<ProxyResolver>
+    resolver: Addr<ProxyResolver>,
 }
 
 #[async_trait]
@@ -240,23 +210,22 @@ impl Actor for ResolvConfListener {
             let (tx, rx) = std::sync::mpsc::channel();
             let mut debouncer = new_debouncer(Duration::from_secs(1), tx).unwrap();
             debouncer
-            .watcher()
-            .watch(std::path::Path::new("/etc/resolv.conf"), notify::RecursiveMode::NonRecursive)
-            .unwrap();
+                .watcher()
+                .watch(
+                    std::path::Path::new("/etc/resolv.conf"),
+                    notify::RecursiveMode::NonRecursive,
+                )
+                .unwrap();
 
             for result in rx {
                 match result {
-                    Ok(_) => {
-                      match call!(addr.refresh_rules()).await {
-                        Ok(_) => {},
+                    Ok(_) => match call!(addr.refresh_rules()).await {
+                        Ok(_) => {}
                         Err(error) => log::info!("Failed to parse resolv.conf {error:?}"),
-                      }
-                    }
+                    },
                     Err(error) => log::info!("Error {error:?}"),
                 }
             }
-
-
         });
         Produces::ok(())
     }
@@ -300,25 +269,25 @@ impl ResolvConfListener {
                                 matched = true;
                                 match &rule.when_match {
                                     Some(v) => {
-                                    warn!("running command {}", v);
-                                    std::process::Command::new("sh")
-                                        .arg("-c")
-                                        .arg(&v)
-                                        .output()
-                                        .expect("when_match command failed");
-                                    },
+                                        warn!("running command {}", v);
+                                        std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(&v)
+                                            .output()
+                                            .expect("when_match command failed");
+                                    }
                                     None => {}
                                 }
                             } else {
                                 match &rule.when_no_match {
                                     Some(v) => {
-                                    warn!("running command {}", v);
-                                    std::process::Command::new("sh")
-                                        .arg("-c")
-                                        .arg(&v)
-                                        .output()
-                                        .expect("when_no_match command failed");
-                                    },
+                                        warn!("running command {}", v);
+                                        std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(&v)
+                                            .output()
+                                            .expect("when_no_match command failed");
+                                    }
                                     None => {}
                                 }
                             }
@@ -351,4 +320,3 @@ impl Default for ResolvConfListener {
         }
     }
 }
-

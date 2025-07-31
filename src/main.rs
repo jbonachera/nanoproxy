@@ -114,15 +114,9 @@ impl ClientSession {
 
 impl ClientSession {
     #[instrument]
-    async fn proxy(
-        &mut self,
-        client: Client<ProxyConnector>,
-        req: Request<Body>,
-    ) -> ActorResult<Response<Body>> {
+    async fn proxy(&mut self, client: Client<ProxyConnector>, req: Request<Body>) -> ActorResult<Response<Body>> {
         let remote = remote_host(&req);
-        let upstream_url: Url = call!(self.resolver.resolve_proxy_for_url(remote))
-            .await
-            .unwrap();
+        let upstream_url: Url = call!(self.resolver.resolve_proxy_for_url(remote)).await.unwrap();
 
         let remote_host_addr = host_addr(req.uri()).unwrap_or("_".to_string());
         call!(self.connection_tracker.push(StreamInfo {
@@ -168,9 +162,7 @@ impl ClientSession {
             tokio::spawn(async move {
                 match hyper::upgrade::on(req).await {
                     Ok(mut upgraded) => {
-                        let mut server = TcpStream::connect(remote_host)
-                            .await
-                            .expect("remote connection failed");
+                        let mut server = TcpStream::connect(remote_host).await.expect("remote connection failed");
                         if let Err(_) = tunnel(&mut upgraded, &mut server).await {};
                     }
                     Err(_) => {}
@@ -181,9 +173,7 @@ impl ClientSession {
             Ok(Response::new(Body::empty()))
         } else {
             let resp = client.request(req).await;
-            call!(self.connection_tracker.remove(self.id))
-                .await
-                .unwrap();
+            call!(self.connection_tracker.remove(self.id)).await.unwrap();
 
             resp
         }
@@ -220,7 +210,7 @@ impl ClientSession {
                     Ok(mut server) => match hyper::upgrade::on(req).await {
                         Ok(mut upgraded) => {
                             if let Err(e) = tunnel(&mut upgraded, &mut server).await {
-                                error!("{}: server io error: {}", uri,  e);
+                                error!("{}: server io error: {}", uri, e);
                             };
                         }
                         Err(e) => error!("server refused to upgade to CONNECT {}: {}", uri, e),
@@ -232,9 +222,7 @@ impl ClientSession {
             Ok(Response::new(Body::empty()))
         } else {
             let resp = client.request(req).await;
-            call!(self.connection_tracker.remove(self.id))
-                .await
-                .unwrap();
+            call!(self.connection_tracker.remove(self.id)).await.unwrap();
             resp
         }
     }
@@ -258,7 +246,9 @@ async fn main() {
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
-    let credentials = spawn_actor(CredentialProvider::from_auth_rules(cfg.auth_rules.unwrap_or(vec![ProxyAuthRule::default()])));
+    let credentials = spawn_actor(CredentialProvider::from_auth_rules(
+        cfg.auth_rules.unwrap_or(vec![ProxyAuthRule::default()]),
+    ));
     let connection_tracker = spawn_actor(ConnectionTracker::default());
     let resolver = spawn_actor(ProxyResolver::default());
     if let Some(v) = cfg.pac_rules {
@@ -304,8 +294,7 @@ async fn main() {
         );
         println!(
             "Configuration loaded from {:#?}",
-            confy::get_configuration_file_path("nanoproxy", "nanoproxy")
-                .expect("failed to load config")
+            confy::get_configuration_file_path("nanoproxy", "nanoproxy").expect("failed to load config")
         );
         println!("");
         println!(
@@ -339,8 +328,7 @@ async fn main() {
             server.local_addr().port()
         );
 
-        println!(
-        "export no_proxy=localhost,127.0.0.0/8,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16;");
+        println!("export no_proxy=localhost,127.0.0.0/8,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16;");
         println!("");
         println!("Connection logs will appear below.");
     }
