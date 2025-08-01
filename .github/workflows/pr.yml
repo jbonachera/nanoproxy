@@ -1,0 +1,27 @@
+name: PR CI
+on:
+  pull_request:
+    branches:
+      - master
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-quality:
+    name: Check Quality
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+
+      - name: Ensure formatting
+        run: cargo fmt --check
+
+      - name: Ensure code validity
+        run: cargo build --release --target aarch64-apple-darwin

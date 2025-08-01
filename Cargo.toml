@@ -13,14 +13,11 @@ ipnet = "2.9.0"
 resolv-conf = "0.7.0"
 notify-debouncer-mini = "0.4.1"
 tokio = { version = "1", features = ["full", "net"] }
-pretty_env_logger = "0.4"
 clap = { version = "4", features = ["derive"] }
 confy = "0.6.0"
 headers = "0.3.4"
 async-trait = "0.1.58"
-tokio-util = "0.7.4"
 futures = "0.3.25"
-libproxy = "0.1.1"
 base64 = "0.13.1"
 url = "2.3.1"
 js-sandbox = { version = "0.2.0-rc.2" }
@@ -31,6 +28,4 @@ log = { version = "0.4", features = ["kv_unstable"] }
 tracing = "0.1"
 tracing-subscriber = "0.3"
 serde = { version = "1.0.147", features = ["derive"] }
-tui = "0.19.0"
-crossterm = "0.25.0"
 uuid = { version = "1.2.2", features = ["v4"] }
