@@ -23,6 +23,8 @@ use tracker::ConnectionTracker;
 use url::Url;
 use uuid::Uuid;
 
+use rlimit::{getrlimit, setrlimit, Resource};
+
 use tokio::net::TcpStream;
 
 use act_zero::runtimes::tokio::spawn_actor;
@@ -34,15 +36,35 @@ use tracing_subscriber;
 use crate::tracker::StreamInfo;
 
 #[derive(Debug, Serialize, Deserialize)]
+struct SystemConfiguration {
+    max_connections: u64,
+}
+
+impl Default for SystemConfiguration {
+    fn default() -> SystemConfiguration {
+        Self { max_connections: 1024 }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct ProxyConfig {
+    #[serde(default)]
+    system: SystemConfiguration,
+
+    #[serde(default)]
     auth_rules: Option<Vec<ProxyAuthRule>>,
+
+    #[serde(default)]
     pac_rules: Option<Vec<ProxyPACRule>>,
+
+    #[serde(default)]
     resolvconf_rules: Option<Vec<ResolvConfRule>>,
 }
 
 impl Default for ProxyConfig {
     fn default() -> Self {
         Self {
+            system: SystemConfiguration::default(),
             auth_rules: Some(vec![ProxyAuthRule::default()]),
             pac_rules: Some(vec![ProxyPACRule::default()]),
             resolvconf_rules: Some(vec![ResolvConfRule::default()]),
@@ -281,6 +303,16 @@ async fn main() {
             }))
         }
     });
+
+    let (_, hard_limit) = getrlimit(Resource::NOFILE).unwrap();
+
+    let max_connections = if cfg.system.max_connections < hard_limit {
+        cfg.system.max_connections
+    } else {
+        hard_limit
+    };
+
+    setrlimit(Resource::NOFILE, max_connections, hard_limit).unwrap();
 
     let server = Server::bind(&listen_addr)
         .http1_preserve_header_case(true)
