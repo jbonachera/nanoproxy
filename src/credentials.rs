@@ -1,10 +1,14 @@
 use std::{collections::HashMap, num::NonZeroUsize, process::Command};
 
 use act_zero::{Actor, ActorResult, Produces};
+use base64::Engine;
 use lru::LruCache;
 use serde::{Deserialize, Serialize};
 fn encode_credentials(username: &str, password: &str) -> String {
-    format!("Basic {}", base64::encode(format!("{username}:{password}")))
+    format!(
+        "Basic {}",
+        base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"))
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]

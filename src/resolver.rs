@@ -213,7 +213,7 @@ impl Actor for ResolvConfListener {
                 .watcher()
                 .watch(
                     std::path::Path::new("/etc/resolv.conf"),
-                    notify::RecursiveMode::NonRecursive,
+                    notify_debouncer_mini::notify::RecursiveMode::NonRecursive,
                 )
                 .unwrap();
 
