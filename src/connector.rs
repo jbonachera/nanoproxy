@@ -4,13 +4,14 @@ use act_zero::{call, Addr};
 use futures::Future;
 use std::io::Error;
 use std::pin::Pin;
-use std::task::{self, Poll};
+use std::task::{Context, Poll};
 use std::time::Duration;
 
-use hyper::service::Service;
 use hyper::Uri;
+use tower_service::Service;
 use url::Url;
 
+use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
 
@@ -26,23 +27,39 @@ impl From<Addr<ProxyResolver>> for ProxyConnector {
 }
 
 impl Service<Uri> for ProxyConnector {
-    type Response = ProxyConnection<TcpStream>;
+    type Response = ProxyConnection<TokioIo<TcpStream>>;
     type Error = std::io::Error;
-    type Future = Pin<Box<dyn Future<Output = core::result::Result<Self::Response, Self::Error>> + Send>>;
+    type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
-    fn poll_ready(&mut self, _: &mut task::Context<'_>) -> Poll<core::result::Result<(), Self::Error>> {
+    fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         Poll::Ready(Ok(()))
     }
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         let resolver = self.resolver.clone();
         Box::pin(async move {
-            let url = uri.to_string().parse().unwrap();
+            let url = match uri.to_string().parse() {
+                Ok(url) => url,
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!("Invalid URI: {}", e),
+                    ));
+                }
+            };
             let proxy_urls: Vec<Url> = call!(resolver.get_all_proxies_for_url(url))
                 .await
                 .unwrap_or_else(|_| vec!["direct://".parse().unwrap()]);
 
-            let authority = uri.authority().unwrap();
+            let authority = match uri.authority() {
+                Some(auth) => auth,
+                None => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "URI missing authority",
+                    ));
+                }
+            };
 
             // If we have at least one proxy, try it with timeout
             if !proxy_urls.is_empty() {
@@ -50,7 +67,8 @@ impl Service<Uri> for ProxyConnector {
 
                 match first_proxy_url.scheme() {
                     "direct" => {
-                        let addr = format!("{}:{}", authority.host(), authority.port_u16().unwrap_or(80));
+                        let port = authority.port_u16().unwrap_or(80);
+                        let addr = format!("{}:{}", authority.host(), port);
                         return Self::connect_with_timeout_direct(&addr).await;
                     }
                     "http" => {
@@ -69,10 +87,11 @@ impl Service<Uri> for ProxyConnector {
                                         )
                                         .await;
                                     } else if second_proxy_url.scheme() == "direct" {
+                                        let port = authority.port_u16().unwrap_or(80);
                                         return Self::connect_with_timeout_through_proxy(&format!(
                                             "{}:{}",
                                             authority.host(),
-                                            authority.port_u16().unwrap_or(80)
+                                            port
                                         ))
                                         .await;
                                     }
@@ -88,12 +107,8 @@ impl Service<Uri> for ProxyConnector {
             }
 
             // Default to direct connection if no proxies
-            return Self::connect_with_timeout_direct(&format!(
-                "{}:{}",
-                authority.host(),
-                authority.port_u16().unwrap_or(80)
-            ))
-            .await;
+            let port = authority.port_u16().unwrap_or(80);
+            return Self::connect_with_timeout_direct(&format!("{}:{}", authority.host(), port)).await;
         })
     }
 }
@@ -101,17 +116,17 @@ impl Service<Uri> for ProxyConnector {
 impl ProxyConnector {
     const TIMEOUT_DURATION: Duration = Duration::from_millis(200);
 
-    async fn connect_with_timeout_through_proxy(addr: &String) -> Result<ProxyConnection<TcpStream>, Error> {
+    async fn connect_with_timeout_through_proxy(addr: &String) -> Result<ProxyConnection<TokioIo<TcpStream>>, Error> {
         timeout(Self::TIMEOUT_DURATION, TcpStream::connect(&addr))
             .await?
-            .map(|stream| stream.into())
-            .map(|v: ProxyConnection<TcpStream>| v.into_proxy())
+            .map(|stream| TokioIo::new(stream).into())
+            .map(|v: ProxyConnection<TokioIo<TcpStream>>| v.into_proxy())
     }
 
-    async fn connect_with_timeout_direct(addr: &String) -> Result<ProxyConnection<TcpStream>, Error> {
+    async fn connect_with_timeout_direct(addr: &String) -> Result<ProxyConnection<TokioIo<TcpStream>>, Error> {
         timeout(Self::TIMEOUT_DURATION, TcpStream::connect(&addr))
             .await?
-            .map(|stream| stream.into())
-            .map(|v: ProxyConnection<TcpStream>| v.into_direct())
+            .map(|stream| TokioIo::new(stream).into())
+            .map(|v: ProxyConnection<TokioIo<TcpStream>>| v.into_direct())
     }
 }
