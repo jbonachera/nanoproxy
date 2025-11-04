@@ -5,14 +5,20 @@ mod pac;
 mod resolver;
 mod tracker;
 
-use std::convert::Infallible;
 use std::net::SocketAddr;
 
 use connector::ProxyConnector;
 use credentials::{CredentialProvider, ProxyAuthRule};
-use headers::HeaderValue;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{http, Body, Client, Method, Request, Response, Server};
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Empty};
+use hyper::body::Bytes;
+use hyper::service::service_fn;
+use hyper::{body::Incoming, http, Method, Request, Response};
+use hyper_util::client::legacy::Client;
+use hyper_util::rt::TokioIo;
+use hyper_util::server::conn::auto::Builder as ServerBuilder;
+
+type Body = BoxBody<Bytes, hyper::Error>;
 
 use resolver::{BeaconPoller, ProxyPACRule, ProxyResolver, ResolvConfListener, ResolvConfRule};
 use serde::{Deserialize, Serialize};
@@ -27,13 +33,13 @@ use rlimit::{getrlimit, setrlimit, Resource};
 
 use tokio::net::TcpStream;
 
+use crate::tracker::StreamInfo;
 use act_zero::runtimes::tokio::spawn_actor;
 use act_zero::*;
 use clap::Parser;
+use hyper::header::HeaderValue;
 use tracing::{error, instrument};
-use tracing_subscriber;
-
-use crate::tracker::StreamInfo;
+use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SystemConfiguration {
@@ -85,22 +91,27 @@ fn host_addr(uri: &http::Uri) -> Option<String> {
     uri.authority().and_then(|auth| Some(auth.to_string()))
 }
 
-fn remote_host(req: &Request<Body>) -> Url {
+fn remote_host<T>(req: &Request<T>) -> Result<Url, Box<dyn std::error::Error>> {
     if Method::CONNECT == req.method() {
         if let Some(addr) = host_addr(req.uri()) {
-            return format!("https://{addr}/").parse().expect("valid host");
+            let url_str = format!("https://{addr}/");
+            return url_str
+                .parse()
+                .map_err(|e| format!("Invalid CONNECT URI: {}", e).into());
         }
     }
-    return format!(
-        "http://{}/",
-        req.headers()
-            .get("host")
-            .expect("host header")
-            .to_str()
-            .expect("string")
-    )
-    .parse()
-    .expect("valid host headers");
+
+    let host_header = req
+        .headers()
+        .get("host")
+        .ok_or("Missing host header")?
+        .to_str()
+        .map_err(|e| format!("Invalid host header: {}", e))?;
+
+    let url_str = format!("http://{}/", host_header);
+    url_str
+        .parse()
+        .map_err(|e| format!("Invalid host header URL: {}", e).into())
 }
 
 pub struct ClientSession {
@@ -136,8 +147,24 @@ impl ClientSession {
 
 impl ClientSession {
     #[instrument]
-    async fn proxy(&mut self, client: Client<ProxyConnector>, req: Request<Body>) -> ActorResult<Response<Body>> {
-        let remote = remote_host(&req);
+    async fn proxy(
+        &mut self,
+        client: Client<ProxyConnector, Body>,
+        req: Request<Incoming>,
+    ) -> ActorResult<Response<Body>> {
+        let req = req.map(|body| body.boxed());
+        let remote = match remote_host(&req) {
+            Ok(url) => url,
+            Err(e) => {
+                error!("Invalid URI in request: {}", e);
+                return Produces::ok(
+                    Response::builder()
+                        .status(400)
+                        .body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())
+                        .unwrap(),
+                );
+            }
+        };
         let upstream_url: Url = call!(self.resolver.resolve_proxy_for_url(remote)).await.unwrap();
 
         let remote_host_addr = host_addr(req.uri()).unwrap_or("_".to_string());
@@ -173,28 +200,45 @@ impl ClientSession {
     #[instrument]
     async fn forward(
         &self,
-        client: Client<ProxyConnector>,
+        client: Client<ProxyConnector, Body>,
         req: Request<Body>,
         remote_host: String,
-    ) -> core::result::Result<Response<Body>, hyper::Error> {
+    ) -> Result<Response<Body>, hyper_util::client::legacy::Error> {
         if Method::CONNECT == req.method() {
             let id = self.id.clone();
             let connection_tracker = self.connection_tracker.clone();
 
             tokio::spawn(async move {
                 match hyper::upgrade::on(req).await {
-                    Ok(mut upgraded) => {
-                        let mut server = TcpStream::connect(remote_host).await.expect("remote connection failed");
-                        if let Err(_) = tunnel(&mut upgraded, &mut server).await {};
+                    Ok(upgraded) => {
+                        let mut upgraded = TokioIo::new(upgraded);
+                        let mut server = match TcpStream::connect(&remote_host).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                error!("Failed to connect to remote host {}: {}", remote_host, e);
+                                return;
+                            }
+                        };
+
+                        if let Err(e) = tunnel(&mut upgraded, &mut server).await {
+                            error!("Tunnel error for {}: {}", remote_host, e);
+                        };
                     }
-                    Err(_) => {}
+                    Err(err) => {
+                        error!("failed to upgrade to CONNECT: {}", err);
+                    }
                 }
                 call!(connection_tracker.remove(id)).await.unwrap();
             });
 
-            Ok(Response::new(Body::empty()))
+            let response = Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())
+                .unwrap();
+
+            Ok(response)
         } else {
-            let resp = client.request(req).await;
+            let resp = client.request(req).await.map(|res| res.map(|body| body.boxed()));
             call!(self.connection_tracker.remove(self.id)).await.unwrap();
 
             resp
@@ -203,10 +247,10 @@ impl ClientSession {
     #[instrument]
     async fn forward_upstream(
         &self,
-        client: Client<ProxyConnector>,
+        client: Client<ProxyConnector, Body>,
         mut req: Request<Body>,
         creds: Option<String>,
-    ) -> core::result::Result<Response<Body>, hyper::Error> {
+    ) -> Result<Response<Body>, hyper_util::client::legacy::Error> {
         let creds = creds.unwrap_or("".to_string());
         if creds.len() > 0 {
             req.headers_mut().insert(
@@ -215,7 +259,9 @@ impl ClientSession {
             );
         }
         if Method::CONNECT == req.method() {
-            let mut server_req = Request::connect(req.uri()).body(Body::empty()).unwrap();
+            let mut server_req = Request::connect(req.uri())
+                .body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())
+                .unwrap();
             if creds.len() > 0 {
                 server_req.headers_mut().insert(
                     http::header::PROXY_AUTHORIZATION,
@@ -229,21 +275,26 @@ impl ClientSession {
                 let res = client.request(server_req).await.expect("msg");
                 let uri = req.uri().clone();
                 match hyper::upgrade::on(res).await {
-                    Ok(mut server) => match hyper::upgrade::on(req).await {
-                        Ok(mut upgraded) => {
+                    Ok(server) => match hyper::upgrade::on(req).await {
+                        Ok(upgraded) => {
+                            let mut upgraded = TokioIo::new(upgraded);
+                            let mut server = TokioIo::new(server);
                             if let Err(e) = tunnel(&mut upgraded, &mut server).await {
                                 error!("{}: server io error: {}", uri, e);
                             };
                         }
-                        Err(e) => error!("server refused to upgade to CONNECT {}: {}", uri, e),
+                        Err(e) => error!("server refused to upgrade to CONNECT {}: {}", uri, e),
                     },
-                    Err(e) => error!("client refused to upgade to CONNECT {}: {}", uri, e),
+                    Err(e) => error!("client refused to upgrade to CONNECT {}: {}", uri, e),
                 }
                 call!(connection_tracker.remove(id)).await.unwrap();
             });
-            Ok(Response::new(Body::empty()))
+            Ok(Response::builder()
+                .status(200)
+                .body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())
+                .unwrap())
         } else {
-            let resp = client.request(req).await;
+            let resp = client.request(req).await.map(|res| res.map(|body| body.boxed()));
             call!(self.connection_tracker.remove(self.id)).await.unwrap();
             resp
         }
@@ -264,7 +315,11 @@ impl ProxyResolver {}
 #[tokio::main]
 async fn main() {
     let cfg = confy::load::<ProxyConfig>("nanoproxy", "nanoproxy").expect("failed to load config");
-    tracing_subscriber::fmt::init();
+
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
 
@@ -282,27 +337,10 @@ async fn main() {
 
     let connector = ProxyConnector::from(resolver.clone());
 
-    let client = Client::builder()
+    let client = Client::builder(hyper_util::rt::TokioExecutor::new())
         .http1_title_case_headers(true)
         .http1_preserve_header_case(true)
         .build(connector);
-
-    let make_service = make_service_fn(move |_| {
-        let client = client.clone();
-        let resolver = resolver.clone();
-        let credentials = credentials.clone();
-        let connection_tracker = connection_tracker.clone();
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                let session = spawn_actor(ClientSession::new(
-                    connection_tracker.clone(),
-                    resolver.clone(),
-                    credentials.clone(),
-                ));
-                call!(session.proxy(client.clone(), req))
-            }))
-        }
-    });
 
     let (_, hard_limit) = getrlimit(Resource::NOFILE).unwrap();
 
@@ -314,15 +352,12 @@ async fn main() {
 
     setrlimit(Resource::NOFILE, max_connections, hard_limit).unwrap();
 
-    let server = Server::bind(&listen_addr)
-        .http1_preserve_header_case(true)
-        .http1_title_case_headers(true)
-        .serve(make_service);
+    let listener = tokio::net::TcpListener::bind(&listen_addr).await.unwrap();
     if !args.no_greeting {
         println!(
             "🚀 Nanoproxy server is running on http://{}:{}.",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "Configuration loaded from {:#?}",
@@ -331,40 +366,68 @@ async fn main() {
         println!("");
         println!(
             "export http_proxy=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "export https_proxy=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "export all_proxy=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "export HTTP_PROXY=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "export HTTPS_PROXY=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
         println!(
             "export ALL_PROXY=http://{}:{};",
-            server.local_addr().ip(),
-            server.local_addr().port()
+            listener.local_addr().unwrap().ip(),
+            listener.local_addr().unwrap().port()
         );
 
         println!("export no_proxy=localhost,127.0.0.0/8,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16;");
         println!("");
         println!("Connection logs will appear below.");
     }
-    if let Err(e) = server.await {
-        error!("server error: {}", e);
+
+    loop {
+        let (stream, _) = listener.accept().await.unwrap();
+        let io = TokioIo::new(stream);
+
+        let client = client.clone();
+        let resolver = resolver.clone();
+        let credentials = credentials.clone();
+        let connection_tracker = connection_tracker.clone();
+
+        tokio::task::spawn(async move {
+            let service = service_fn(move |req| {
+                let session = spawn_actor(ClientSession::new(
+                    connection_tracker.clone(),
+                    resolver.clone(),
+                    credentials.clone(),
+                ));
+                call!(session.proxy(client.clone(), req))
+            });
+
+            if let Err(err) = ServerBuilder::new(hyper_util::rt::TokioExecutor::new())
+                .http1()
+                .preserve_header_case(true)
+                .title_case_headers(true)
+                .serve_connection_with_upgrades(io, service)
+                .await
+            {
+                error!("Error serving connection: {:?}", err);
+            }
+        });
     }
 }
