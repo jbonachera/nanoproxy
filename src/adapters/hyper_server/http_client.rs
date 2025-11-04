@@ -5,9 +5,7 @@ use hyper_util::client::legacy::Client;
 use std::collections::HashMap;
 
 use super::connector::HyperConnector;
-use crate::domain::{
-    Credentials, HttpStatus, ProxyError, ProxyMethod, ProxyRequest, ProxyResponse, ProxyRoute, Result,
-};
+use crate::domain::{Credentials, ProxyError, ProxyMethod, ProxyRequest, ProxyResponse, ProxyRoute, Result};
 use crate::ports::HttpClientPort;
 
 type Body = BoxBody<Bytes, hyper::Error>;
@@ -78,7 +76,7 @@ impl HttpClientPort for HyperHttpClient {
             .await
             .map_err(|e| ProxyError::ConnectionFailed(format!("{}", e)))?;
 
-        let status = HttpStatus::from_u16(hyper_resp.status().as_u16());
+        let status = hyper_resp.status();
 
         let headers: HashMap<String, String> = hyper_resp
             .headers()

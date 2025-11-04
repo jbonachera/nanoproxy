@@ -1,46 +1,16 @@
+pub use http::StatusCode;
 use std::collections::HashMap;
 use url::Url;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum HttpStatus {
-    Ok,
-    Forbidden,
-    NotFound,
-    InternalServerError,
-    Other(u16),
-}
-
-impl HttpStatus {
-    pub fn from_u16(code: u16) -> Self {
-        match code {
-            200 => HttpStatus::Ok,
-            403 => HttpStatus::Forbidden,
-            404 => HttpStatus::NotFound,
-            500 => HttpStatus::InternalServerError,
-            other => HttpStatus::Other(other),
-        }
-    }
-
-    pub fn as_u16(&self) -> u16 {
-        match self {
-            HttpStatus::Ok => 200,
-            HttpStatus::Forbidden => 403,
-            HttpStatus::NotFound => 404,
-            HttpStatus::InternalServerError => 500,
-            HttpStatus::Other(code) => *code,
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct ProxyResponse {
-    pub status: HttpStatus,
+    pub status: StatusCode,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
 }
 
 impl ProxyResponse {
-    pub fn new(status: HttpStatus) -> Self {
+    pub fn new(status: StatusCode) -> Self {
         Self {
             status,
             headers: HashMap::new(),
