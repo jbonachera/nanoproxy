@@ -50,6 +50,7 @@ impl ProxyService {
 
     pub async fn handle_connect_request(&self, request: &ConnectRequest) -> Result<ConnectDecision> {
         let route = self.resolver.resolve_route(&request.target_url).await?;
+        log::debug!("Resolved route to {}: {:?}", &request.target_url, route);
 
         if let ProxyRoute::Blocked { reason } = &route {
             return Ok(ConnectDecision::Rejected { reason: reason.clone() });

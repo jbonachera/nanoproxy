@@ -51,6 +51,7 @@ impl CredentialProvider {
 
         // Try exact match first
         if let Some((username, password)) = rules.get(host) {
+            log::debug!("Found credentials for host {}: {}", host, username);
             return Some(Credentials::new(username.clone(), password.clone()));
         }
 
