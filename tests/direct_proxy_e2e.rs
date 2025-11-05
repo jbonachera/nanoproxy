@@ -1,11 +1,12 @@
 mod e2e_utils;
 
-use e2e_utils::TestNanoproxyServer;
+use e2e_utils::nanoproxy_server::TestNanoproxyServer;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 
+#[cfg(test)]
 #[tokio::test]
 async fn test_direct_https_connect_to_google() {
     let nanoproxy = TestNanoproxyServer::start(18887, None)

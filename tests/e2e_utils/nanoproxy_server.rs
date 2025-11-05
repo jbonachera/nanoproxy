@@ -1,3 +1,6 @@
+#![cfg(test)]
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;

@@ -1,13 +1,14 @@
 mod e2e_utils;
 
-use e2e_utils::IntermediateProxy;
+use e2e_utils::intermediate_proxy::IntermediateProxy;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 
+#[cfg(test)]
 #[tokio::test]
-async fn test_intermediate_proxy_direct_connect_to_google() {
+async fn test_intermediate_proxy_direct_connect_to_public_host() {
     let proxy = IntermediateProxy::new(19994)
         .await
         .expect("Failed to create intermediate proxy");
@@ -21,7 +22,7 @@ async fn test_intermediate_proxy_direct_connect_to_google() {
         .await
         .expect("Should be able to connect to intermediate proxy");
 
-    let connect_request = "CONNECT google.com:443 HTTP/1.1\r\nHost: google.com:443\r\n\r\n";
+    let connect_request = "CONNECT ifconfig.me:443 HTTP/1.1\r\nHost: ifconfig.me:443\r\n\r\n";
     stream
         .write_all(connect_request.as_bytes())
         .await

@@ -1,11 +1,12 @@
 mod e2e_utils;
 
-use e2e_utils::{ProxyChainFixture, TestNanoproxyServer};
+use e2e_utils::{TestNanoproxyServer, ProxyChainFixture};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::time::sleep;
 
+#[cfg(test)]
 #[tokio::test]
 async fn test_https_connect_to_google_through_proxy_chain() {
     let fixture = ProxyChainFixture::setup(19995)
