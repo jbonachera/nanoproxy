@@ -59,6 +59,7 @@ impl ProxyMethod {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "GET" => ProxyMethod::Get,
@@ -80,6 +81,7 @@ pub struct ProxyRequest {
     pub method: ProxyMethod,
     pub target_url: Url,
     pub headers: HashMap<String, String>,
+    #[allow(dead_code)]
     pub version: HttpVersion,
 }
 
@@ -100,6 +102,7 @@ impl ProxyRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum HttpVersion {
     Http10,
     Http11,
@@ -128,6 +131,7 @@ impl ConnectRequest {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ProxyRoute {
     Direct,
     Upstream { proxy_url: Url },
@@ -141,18 +145,6 @@ impl ProxyRoute {
             ProxyRoute::Upstream { proxy_url, .. } => proxy_url.scheme(),
             ProxyRoute::Blocked { .. } => "blocked",
         }
-    }
-
-    pub fn is_direct(&self) -> bool {
-        matches!(self, ProxyRoute::Direct)
-    }
-
-    pub fn is_upstream(&self) -> bool {
-        matches!(self, ProxyRoute::Upstream { .. })
-    }
-
-    pub fn is_blocked(&self) -> bool {
-        matches!(self, ProxyRoute::Blocked { .. })
     }
 }
 
@@ -175,6 +167,7 @@ impl Credentials {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ConnectionInfo {
     pub id: uuid::Uuid,
     pub method: String,
@@ -196,12 +189,9 @@ impl ConnectionInfo {
         }
     }
 
+    #[allow(dead_code)]
     pub fn close(&mut self) {
         self.closed_at = Some(std::time::Instant::now());
-    }
-
-    pub fn duration(&self) -> Option<std::time::Duration> {
-        self.closed_at.map(|closed| closed.duration_since(self.opened_at))
     }
 }
 

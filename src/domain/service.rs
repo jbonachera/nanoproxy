@@ -388,7 +388,7 @@ mod tests {
                     credentials: _,
                     connection_id: _,
                 } => {
-                    assert!(route.is_direct());
+                    assert!(matches!(route, ProxyRoute::Direct));
                     assert_eq!(tracker.track_calls(), 1);
                 }
                 ConnectDecision::Rejected { .. } => panic!("Should not be rejected"),
@@ -447,7 +447,7 @@ mod tests {
 
                 match decision {
                     ConnectDecision::Accept { route, .. } => {
-                        assert!(route.is_direct());
+                        assert!(matches!(route, ProxyRoute::Direct));
                     }
                     ConnectDecision::Rejected { .. } => panic!("Should not be rejected"),
                 }
