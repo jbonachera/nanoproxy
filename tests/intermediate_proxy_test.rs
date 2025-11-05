@@ -22,13 +22,14 @@ async fn test_intermediate_proxy_direct_connect_to_public_host() {
         .await
         .expect("Should be able to connect to intermediate proxy");
 
-    let connect_request = "CONNECT ifconfig.me:443 HTTP/1.1\r\nHost: ifconfig.me:443\r\n\r\n";
+    // Open CONNECT session to httpbin.org:80
+    let connect_request = "CONNECT httpbin.org:80 HTTP/1.1\r\nHost: httpbin.org:80\r\n\r\n";
     stream
         .write_all(connect_request.as_bytes())
         .await
         .expect("Should be able to write CONNECT request");
 
-    let mut buffer = [0u8; 1024];
+    let mut buffer = [0u8; 4096];
     let n = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut buffer))
         .await
         .expect("Should receive response within timeout")
@@ -37,16 +38,43 @@ async fn test_intermediate_proxy_direct_connect_to_public_host() {
     assert!(n > 0, "Response should not be empty");
 
     let response = String::from_utf8_lossy(&buffer[..n]);
+    println!("CONNECT response: {}", response);
+
+    assert!(response.contains("200"), "Expected 200 OK, got: {}", response);
+
+    // Now make an HTTP request through the tunnel to verify we're talking to the right host
+    let http_request = "GET /headers HTTP/1.1\r\nHost: httpbin.org\r\nConnection: close\r\n\r\n";
+    stream
+        .write_all(http_request.as_bytes())
+        .await
+        .expect("Should be able to write HTTP request through tunnel");
+
+    // Read the HTTP response
+    let mut response_data = Vec::new();
+    let mut chunk = [0u8; 4096];
+    loop {
+        match tokio::time::timeout(Duration::from_secs(5), stream.read(&mut chunk)).await {
+            Ok(Ok(0)) => break, // EOF
+            Ok(Ok(n)) => response_data.extend_from_slice(&chunk[..n]),
+            Ok(Err(e)) => panic!("Read error: {}", e),
+            Err(_) => break, // Timeout, we got all data
+        }
+    }
+
+    let http_response = String::from_utf8_lossy(&response_data);
+    println!("HTTP response:\n{}", http_response);
+
+    // Verify we got a valid HTTP response
     assert!(
-        response.contains("200") || response.contains("502"),
-        "Expected 200 OK or 502 Bad Gateway, got: {}",
-        response
+        http_response.contains("HTTP/1.1 200 OK") || http_response.contains("HTTP/1.1"),
+        "Should receive valid HTTP response, got: {}",
+        http_response
     );
 
-    if response.contains("200") {
-        stream
-            .write_all(&[0x16, 0x03, 0x01])
-            .await
-            .expect("Tunnel should be open and writable");
-    }
+    // Verify we're talking to httpbin.org
+    assert!(
+        http_response.contains("\"Host\": \"httpbin.org\""),
+        "Response should be from httpbin.org and contain Host header, got: {}",
+        http_response
+    );
 }

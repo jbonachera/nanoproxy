@@ -8,4 +8,4 @@ pub mod proxy_chain_fixture;
 
 pub use intermediate_proxy::IntermediateProxy;
 pub use nanoproxy_server::TestNanoproxyServer;
-pub use proxy_chain_fixture::{ProxyChainFixture, create_pac_script};
+pub use proxy_chain_fixture::{create_pac_script, ProxyChainFixture};

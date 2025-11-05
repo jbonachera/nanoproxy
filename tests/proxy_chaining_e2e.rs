@@ -1,6 +1,6 @@
 mod e2e_utils;
 
-use e2e_utils::{TestNanoproxyServer, ProxyChainFixture};
+use e2e_utils::{ProxyChainFixture, TestNanoproxyServer};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;

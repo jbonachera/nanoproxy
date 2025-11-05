@@ -67,6 +67,7 @@ impl IntermediateProxy {
                             (target, "443")
                         };
 
+                        eprintln!("[IntermediateProxy] CONNECT to {}:{}", host, port);
                         match TcpStream::connect(format!("{}:{}", host, port)).await {
                             Ok(mut target_stream) => {
                                 // Send 200 response
