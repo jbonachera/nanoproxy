@@ -69,15 +69,19 @@ impl CredentialProvider {
 #[async_trait]
 impl CredentialsPort for CredentialProvider {
     async fn get_credentials(&self, host: &str) -> Result<Option<Credentials>> {
-        let mut cache = self.cache.write().await;
-        if let Some(cached) = cache.get(host) {
-            return Ok(cached.clone());
+        {
+            let mut cache = self.cache.write().await;
+            if let Some(cached) = cache.get(host) {
+                return Ok(cached.clone());
+            }
         }
 
         let creds = self.find_credentials_for_host(host).await;
 
-        let mut cache = self.cache.write().await;
-        cache.put(host.to_string(), creds.clone());
+        {
+            let mut cache = self.cache.write().await;
+            cache.put(host.to_string(), creds.clone());
+        }
 
         Ok(creds)
     }

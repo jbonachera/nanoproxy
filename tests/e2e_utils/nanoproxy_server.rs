@@ -8,8 +8,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
 
 use nanoproxy::adapters::{
-    ConnectionTracker, CredentialProvider, HyperConnector, HyperHttpClient, HyperProxyAdapter,
-    PacProxyResolver,
+    ConnectionTracker, CredentialProvider, HyperConnector, HyperHttpClient, HyperProxyAdapter, PacProxyResolver,
 };
 use nanoproxy::domain::ProxyService;
 use nanoproxy::ports::{CredentialsPort, ProxyResolverPort, TrackingPort};
@@ -20,10 +19,7 @@ pub struct TestNanoproxyServer {
 }
 
 impl TestNanoproxyServer {
-    pub async fn start(
-        port: u16,
-        pac_file_path: Option<&std::path::Path>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn start(port: u16, pac_file_path: Option<&std::path::Path>) -> Result<Self, Box<dyn std::error::Error>> {
         let addr: SocketAddr = format!("127.0.0.1:{}", port).parse()?;
         let listener = TcpListener::bind(addr).await?;
         let addr = listener.local_addr()?;
