@@ -1,11 +1,9 @@
-use crate::domain::ProxyRoute;
 use crate::ports::ProxyResolverPort;
 use futures::Future;
 use hyper::Uri;
 use hyper_util::rt::TokioIo;
-use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::net::TcpStream;
@@ -16,31 +14,11 @@ use url::Url;
 #[derive(Clone)]
 pub struct HyperConnector {
     resolver: Arc<dyn ProxyResolverPort>,
-    route_cache: Arc<RwLock<HashMap<String, ProxyRoute>>>,
 }
 
 impl HyperConnector {
     pub fn new(resolver: Arc<dyn ProxyResolverPort>) -> Self {
-        Self {
-            resolver,
-            route_cache: Arc::new(RwLock::new(HashMap::new())),
-        }
-    }
-
-    pub fn set_route_for_uri(&self, uri: &Uri, route: ProxyRoute) {
-        let key = uri.to_string();
-        if let Ok(mut cache) = self.route_cache.write() {
-            cache.insert(key, route);
-        }
-    }
-
-    fn get_route_for_uri(&self, uri: &Uri) -> Option<ProxyRoute> {
-        let key = uri.to_string();
-        if let Ok(mut cache) = self.route_cache.write() {
-            cache.remove(&key)
-        } else {
-            None
-        }
+        Self { resolver }
     }
 
     const TIMEOUT_DURATION: Duration = Duration::from_millis(200);
@@ -57,26 +35,21 @@ impl Service<Uri> for HyperConnector {
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         let resolver = self.resolver.clone();
-        let cached_route = self.get_route_for_uri(&uri);
 
         Box::pin(async move {
             let authority = uri
                 .authority()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Missing authority"))?;
 
-            let routes = if let Some(route) = cached_route {
-                vec![route]
-            } else {
-                let url: Url = uri
-                    .to_string()
-                    .parse()
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
+            let url: Url = uri
+                .to_string()
+                .parse()
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
 
-                resolver
-                    .resolve_all_routes(&url)
-                    .await
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
-            };
+            let routes = resolver
+                .resolve_all_routes(&url)
+                .await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
             log::debug!("Connecting to {} with routes {:?}", authority, routes);
 

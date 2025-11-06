@@ -3,10 +3,18 @@ use std::collections::HashMap;
 use url::Url;
 
 #[derive(Debug, Clone)]
+pub struct TunnelInfo {
+    pub route: ProxyRoute,
+    pub credentials: Option<Credentials>,
+    pub connection_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProxyResponse {
     pub status: StatusCode,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    pub tunnel_required: Option<TunnelInfo>,
 }
 
 impl ProxyResponse {
@@ -15,6 +23,7 @@ impl ProxyResponse {
             status,
             headers: HashMap::new(),
             body: Vec::new(),
+            tunnel_required: None,
         }
     }
 
@@ -25,6 +34,11 @@ impl ProxyResponse {
 
     pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
         self.headers = headers;
+        self
+    }
+
+    pub fn with_tunnel(mut self, tunnel_info: TunnelInfo) -> Self {
+        self.tunnel_required = Some(tunnel_info);
         self
     }
 }
@@ -193,18 +207,6 @@ impl ConnectionInfo {
     pub fn close(&mut self) {
         self.closed_at = Some(std::time::Instant::now());
     }
-}
-
-#[derive(Debug)]
-pub enum ConnectDecision {
-    Accept {
-        route: ProxyRoute,
-        credentials: Option<Credentials>,
-        connection_id: uuid::Uuid,
-    },
-    Rejected {
-        reason: String,
-    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

@@ -10,7 +10,7 @@ use tracing::error;
 use url::Url;
 
 use super::connector::HyperConnector;
-use crate::domain::{ConnectDecision, ConnectRequest, ProxyError, ProxyMethod, ProxyRequest, ProxyRoute, ProxyService};
+use crate::domain::{ConnectRequest, ProxyError, ProxyMethod, ProxyRequest, ProxyRoute, ProxyService};
 
 type Body = BoxBody<Bytes, hyper::Error>;
 
@@ -69,31 +69,28 @@ impl HyperProxyAdapter {
         let headers = extract_headers(&req);
         let connect_req = ConnectRequest::new(target_url).with_headers(headers);
 
-        let decision = self.service.handle_connect_request(&connect_req).await?;
+        let response = self.service.handle_connect_request(&connect_req).await?;
 
-        match decision {
-            ConnectDecision::Rejected { reason } => {
-                error!("CONNECT rejected: {}", reason);
-                Ok(Response::builder()
-                    .status(403)
-                    .body(Empty::<Bytes>::new().map_err(|never| match never {}).boxed())
-                    .unwrap())
-            }
-            ConnectDecision::Accept {
-                route,
-                credentials,
-                connection_id,
-            } => {
-                establish_tunnel(
-                    req,
-                    route,
-                    credentials,
-                    connection_id,
-                    self.service.clone(),
-                    self.client.clone(),
+        if let Some(tunnel_info) = response.tunnel_required {
+            establish_tunnel(
+                req,
+                tunnel_info.route,
+                tunnel_info.credentials,
+                tunnel_info.connection_id,
+                self.service.clone(),
+                self.client.clone(),
+            )
+            .await
+        } else {
+            error!("CONNECT rejected: {}", String::from_utf8_lossy(&response.body));
+            Ok(Response::builder()
+                .status(response.status.as_u16())
+                .body(
+                    Full::new(Bytes::from(response.body))
+                        .map_err(|never| match never {})
+                        .boxed(),
                 )
-                .await
-            }
+                .unwrap())
         }
     }
 
