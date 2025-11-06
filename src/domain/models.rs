@@ -130,15 +130,8 @@ impl ConnectRequest {
 #[derive(Debug, Clone)]
 pub enum ProxyRoute {
     Direct,
-    Upstream {
-        proxy_url: Url,
-        #[allow(dead_code)]
-        credentials: Option<Credentials>,
-    },
-    #[allow(dead_code)]
-    Blocked {
-        reason: String,
-    },
+    Upstream { proxy_url: Url },
+    Blocked { reason: String },
 }
 
 impl ProxyRoute {
