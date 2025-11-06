@@ -30,6 +30,8 @@ impl ProxyService {
 
     pub async fn handle_http_request(&self, request: &ProxyRequest) -> Result<ProxyResponse> {
         let route = self.resolver.resolve_route(&request.target_url).await?;
+        log::debug!("Resolved route to {}: {}", &request.target_url, route);
+
         let credentials = self.get_credentials_for_route(&route).await?;
 
         let conn_info = ConnectionInfo::new(
@@ -49,7 +51,7 @@ impl ProxyService {
 
     pub async fn handle_connect_request(&self, request: &ConnectRequest) -> Result<ProxyResponse> {
         let route = self.resolver.resolve_route(&request.target_url).await?;
-        log::debug!("Resolved route to {}: {:?}", &request.target_url, route);
+        log::debug!("Resolved route to {}: {}", &request.target_url, route);
 
         if let ProxyRoute::Blocked { reason } = &route {
             return Ok(ProxyResponse::new(http::StatusCode::FORBIDDEN)

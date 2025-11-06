@@ -112,18 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener.start()?;
     }
 
-    // Create Hyper client with connector (for CONNECT tunnels)
     let connector = HyperConnector::new(resolver.clone());
     let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .http1_title_case_headers(true)
         .http1_preserve_header_case(true)
         .build(connector.clone());
 
-    // Create HTTP client adapter (implements HttpClientPort)
-    // Uses reqwest which correctly handles absolute-form URIs for HTTP proxies
     let http_client = Arc::new(ReqwestHttpClient::new());
 
-    // Create domain proxy service
     let proxy_service = Arc::new(ProxyService::new(
         resolver.clone(),
         credentials.clone(),
@@ -131,7 +127,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_client,
     ));
 
-    // Create Hyper adapter (for CONNECT tunnels)
     let adapter = Arc::new(HyperProxyAdapter::new(proxy_service, client));
 
     // Bind listener

@@ -51,8 +51,6 @@ impl Service<Uri> for HyperConnector {
                 .await
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-            log::debug!("Connecting to {} with routes {:?}", authority, routes);
-
             for route in routes {
                 let addr = match route {
                     crate::domain::ProxyRoute::Direct => {

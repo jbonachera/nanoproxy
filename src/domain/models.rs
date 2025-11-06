@@ -151,6 +151,15 @@ pub enum ProxyRoute {
     Upstream { proxy_url: Url },
     Blocked { reason: String },
 }
+impl std::fmt::Display for ProxyRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProxyRoute::Direct => write!(f, "direct"),
+            ProxyRoute::Upstream { proxy_url, .. } => write!(f, "upstream {}", proxy_url),
+            ProxyRoute::Blocked { reason } => write!(f, "blocked: {}", reason),
+        }
+    }
+}
 
 impl ProxyRoute {
     pub fn scheme(&self) -> &str {
