@@ -11,7 +11,7 @@ use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
 
 use nanoproxy::adapters::{
-    ConnectionTracker, CredentialProvider, HyperConnector, HyperHttpClient, HyperProxyAdapter, PacProxyResolver,
+    ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver, ReqwestHttpClient,
 };
 use nanoproxy::domain::ProxyService;
 use nanoproxy::ports::{CredentialsPort, ProxyResolverPort, TrackingPort};
@@ -46,7 +46,7 @@ impl TestNanoproxyServer {
             .http1_preserve_header_case(true)
             .build(connector.clone());
 
-        let http_client = Arc::new(HyperHttpClient::new(connector.clone(), client.clone()));
+        let http_client = Arc::new(ReqwestHttpClient::new());
 
         let proxy_service = Arc::new(ProxyService::new(
             resolver.clone(),

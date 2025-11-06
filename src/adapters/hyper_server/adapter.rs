@@ -131,6 +131,16 @@ fn extract_target_url(req: &Request<Incoming>) -> Result<Url, ProxyError> {
         }
     }
 
+    // For HTTP requests, check if URI already has an authority (absolute form)
+    if let Some(authority) = req.uri().authority() {
+        let path_and_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+        let url_str = format!("http://{}{}", authority, path_and_query);
+        return url_str
+            .parse()
+            .map_err(|e| ProxyError::InvalidUri(format!("Invalid URI: {}", e)));
+    }
+
+    // Origin-form URI, combine path with Host header
     let host_header = req
         .headers()
         .get("host")
@@ -138,7 +148,8 @@ fn extract_target_url(req: &Request<Incoming>) -> Result<Url, ProxyError> {
         .to_str()
         .map_err(|e| ProxyError::InvalidRequest(format!("Invalid host header: {}", e)))?;
 
-    let url_str = format!("http://{}/", host_header);
+    let path_and_query = req.uri().path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let url_str = format!("http://{}{}", host_header, path_and_query);
     url_str
         .parse()
         .map_err(|e| ProxyError::InvalidUri(format!("Invalid host header URL: {}", e)))

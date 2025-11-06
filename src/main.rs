@@ -15,8 +15,8 @@ use tracing::error;
 use tracing_subscriber::EnvFilter;
 
 use adapters::{
-    BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperHttpClient, HyperProxyAdapter,
-    PacProxyResolver, ResolvConfListener,
+    BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver,
+    ReqwestHttpClient, ResolvConfListener,
 };
 use domain::{AuthRule, PacRule, ProxyService, ResolvConfRule};
 
@@ -112,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener.start()?;
     }
 
-    // Create Hyper client with connector
+    // Create Hyper client with connector (for CONNECT tunnels)
     let connector = HyperConnector::new(resolver.clone());
     let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .http1_title_case_headers(true)
@@ -120,7 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build(connector.clone());
 
     // Create HTTP client adapter (implements HttpClientPort)
-    let http_client = Arc::new(HyperHttpClient::new(connector.clone(), client.clone()));
+    // Uses reqwest which correctly handles absolute-form URIs for HTTP proxies
+    let http_client = Arc::new(ReqwestHttpClient::new());
 
     // Create domain proxy service
     let proxy_service = Arc::new(ProxyService::new(
