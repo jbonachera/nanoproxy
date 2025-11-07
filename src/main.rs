@@ -6,13 +6,12 @@ use clap::Parser;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
+use log::error;
 use rlimit::{getrlimit, setrlimit, Resource};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::error;
-use tracing_subscriber::EnvFilter;
 
 use adapters::{
     BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver,
@@ -70,11 +69,7 @@ pub struct Opts {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let cfg = confy::load::<ProxyConfig>("nanoproxy", "nanoproxy")?;
-
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    env_logger::init();
 
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));

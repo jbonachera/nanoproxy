@@ -3,10 +3,10 @@ use hyper::body::Bytes;
 use hyper::{body::Incoming, header::HeaderValue, Method, Request, Response};
 use hyper_util::client::legacy::Client;
 use hyper_util::rt::TokioIo;
+use log::error;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::net::TcpStream;
-use tracing::error;
 use url::Url;
 
 use super::connector::HyperConnector;
@@ -51,7 +51,7 @@ impl HyperProxyAdapter {
 
         for (key, value) in domain_response.headers {
             if let Ok(header_name) = key.parse::<hyper::header::HeaderName>() {
-                if let Ok(header_value) = value.parse::<hyper::header::HeaderValue>() {
+                if let Ok(header_value) = value.parse::<HeaderValue>() {
                     hyper_response = hyper_response.header(header_name, header_value);
                 }
             }

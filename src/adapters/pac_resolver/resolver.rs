@@ -2,13 +2,12 @@ use super::pac_evaluator::{evaluate_pac, parse_proxy_route};
 use crate::domain::{ProxyError, ProxyRoute, Result};
 use crate::ports::ProxyResolverPort;
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, info};
 use lru::LruCache;
 use reqwest::ClientBuilder;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
 use url::Url;
 
 /// Actor-based PAC resolver implementation
