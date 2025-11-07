@@ -6,7 +6,7 @@ use clap::Parser;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
-use log::error;
+use log::{error, LevelFilter};
 use rlimit::{getrlimit, setrlimit, Resource};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -22,11 +22,28 @@ use domain::{AuthRule, PacRule, ProxyService, ResolvConfRule};
 #[derive(Debug, Serialize, Deserialize)]
 struct SystemConfiguration {
     max_connections: u64,
+    #[serde(default)]
+    log_level: String,
+}
+
+fn parse_log_level(level: &str) -> LevelFilter {
+    match level.to_lowercase().as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        "off" => LevelFilter::Off,
+        _ => LevelFilter::Info,
+    }
 }
 
 impl Default for SystemConfiguration {
     fn default() -> Self {
-        Self { max_connections: 1024 }
+        Self {
+            max_connections: 1024,
+            log_level: "info".to_string(),
+        }
     }
 }
 
@@ -69,7 +86,11 @@ pub struct Opts {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let cfg = confy::load::<ProxyConfig>("nanoproxy", "nanoproxy")?;
-    env_logger::init();
+
+    // Initialize logger with configured level, respecting RUST_LOG env var
+    env_logger::Builder::from_default_env()
+        .filter_level(parse_log_level(&cfg.system.log_level))
+        .init();
 
     let args = Opts::parse();
     let listen_addr = SocketAddr::from(([127, 0, 0, 1], args.port));
