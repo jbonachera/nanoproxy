@@ -26,32 +26,29 @@ impl HttpClientPort for ReqwestHttpClient {
         route: &ProxyRoute,
         credentials: Option<&Credentials>,
     ) -> Result<ProxyResponse> {
-        let mut builder = reqwest::Client::builder();
-
-        match route {
+        let builder = match route {
             ProxyRoute::Upstream { proxy_url } => {
                 let proxy_uri = proxy_url
                     .as_str()
                     .parse::<reqwest::Url>()
                     .map_err(|e| ProxyError::InvalidUri(format!("Invalid proxy URL: {}", e)))?;
 
-                let mut proxy = reqwest::Proxy::http(proxy_uri)
-                    .map_err(|e| ProxyError::InvalidUri(format!("Failed to create proxy: {}", e)))?;
+                let proxy = {
+                    let p = reqwest::Proxy::http(proxy_uri)
+                        .map_err(|e| ProxyError::InvalidUri(format!("Failed to create proxy: {}", e)))?;
+                    if let Some(creds) = credentials {
+                        p.basic_auth(&creds.username, &creds.password)
+                    } else {
+                        p
+                    }
+                };
 
-                if let Some(creds) = credentials {
-                    proxy = proxy.basic_auth(&creds.username, &creds.password);
-                }
+                reqwest::Client::builder().proxy(proxy)
+            }
+            ProxyRoute::Direct => reqwest::Client::builder().no_proxy(),
+            ProxyRoute::Blocked { reason } => return Err(ProxyError::ConnectionFailed(reason.clone())),
+        };
 
-                builder = builder.proxy(proxy);
-            }
-            ProxyRoute::Direct => {
-                // Explicitly disable system proxies for direct connections
-                builder = builder.no_proxy();
-            }
-            ProxyRoute::Blocked { reason } => {
-                return Err(ProxyError::ConnectionFailed(reason.clone()));
-            }
-        }
 
         let client = builder
             .build()
