@@ -1,9 +1,8 @@
+use http;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::{
-    ConnectDecision, ConnectRequest, ConnectionInfo, Credentials, ProxyRequest, ProxyResponse, ProxyRoute, Result,
-};
+use super::{ConnectRequest, ConnectionInfo, Credentials, ProxyRequest, ProxyResponse, ProxyRoute, Result, TunnelInfo};
 use crate::ports::{CredentialsPort, HttpClientPort, ProxyResolverPort, TrackingPort};
 
 #[derive(Clone)]
@@ -31,6 +30,8 @@ impl ProxyService {
 
     pub async fn handle_http_request(&self, request: &ProxyRequest) -> Result<ProxyResponse> {
         let route = self.resolver.resolve_route(&request.target_url).await?;
+        log::debug!("Resolved route to {}: {}", &request.target_url, route);
+
         let credentials = self.get_credentials_for_route(&route).await?;
 
         let conn_info = ConnectionInfo::new(
@@ -48,12 +49,13 @@ impl ProxyService {
         Ok(response)
     }
 
-    pub async fn handle_connect_request(&self, request: &ConnectRequest) -> Result<ConnectDecision> {
+    pub async fn handle_connect_request(&self, request: &ConnectRequest) -> Result<ProxyResponse> {
         let route = self.resolver.resolve_route(&request.target_url).await?;
-        log::debug!("Resolved route to {}: {:?}", &request.target_url, route);
+        log::debug!("Resolved route to {}: {}", &request.target_url, route);
 
         if let ProxyRoute::Blocked { reason } = &route {
-            return Ok(ConnectDecision::Rejected { reason: reason.clone() });
+            return Ok(ProxyResponse::new(http::StatusCode::FORBIDDEN)
+                .with_body(format!("Route blocked: {}", reason).into_bytes()));
         }
 
         let credentials = self.get_credentials_for_route(&route).await?;
@@ -66,11 +68,13 @@ impl ProxyService {
         let conn_id = conn_info.id;
         self.tracker.track_connection(conn_info).await?;
 
-        Ok(ConnectDecision::Accept {
+        let tunnel_info = TunnelInfo {
             route,
             credentials,
             connection_id: conn_id,
-        })
+        };
+
+        Ok(ProxyResponse::new(http::StatusCode::OK).with_tunnel(tunnel_info))
     }
 
     pub async fn close_connection(&self, id: Uuid) -> Result<()> {
@@ -380,19 +384,14 @@ mod tests {
             );
 
             let request = create_connect_request("https://example.com:443");
-            let decision = service.handle_connect_request(&request).await.unwrap();
+            let response = service.handle_connect_request(&request).await.unwrap();
 
-            match decision {
-                ConnectDecision::Accept {
-                    route,
-                    credentials: _,
-                    connection_id: _,
-                } => {
-                    assert!(route.is_direct());
-                    assert_eq!(tracker.track_calls(), 1);
-                }
-                ConnectDecision::Rejected { .. } => panic!("Should not be rejected"),
+            assert_eq!(response.status, http::StatusCode::OK);
+            assert!(response.tunnel_required.is_some());
+            if let Some(tunnel_info) = response.tunnel_required {
+                assert!(matches!(tunnel_info.route, ProxyRoute::Direct));
             }
+            assert_eq!(tracker.track_calls(), 1);
         }
 
         #[tokio::test]
@@ -413,15 +412,11 @@ mod tests {
             );
 
             let request = create_connect_request("https://example.com:443");
-            let decision = service.handle_connect_request(&request).await.unwrap();
+            let response = service.handle_connect_request(&request).await.unwrap();
 
-            match decision {
-                ConnectDecision::Accept { .. } => panic!("Should be rejected"),
-                ConnectDecision::Rejected { reason } => {
-                    assert_eq!(reason, "Test block reason");
-                    assert_eq!(tracker.track_calls(), 0);
-                }
-            }
+            assert_eq!(response.status, http::StatusCode::FORBIDDEN);
+            assert!(response.tunnel_required.is_none());
+            assert_eq!(tracker.track_calls(), 0);
         }
 
         #[tokio::test]
@@ -443,13 +438,12 @@ mod tests {
 
                 let url = format!("https://example.com:{}", port);
                 let request = create_connect_request(&url);
-                let decision = service.handle_connect_request(&request).await.unwrap();
+                let response = service.handle_connect_request(&request).await.unwrap();
 
-                match decision {
-                    ConnectDecision::Accept { route, .. } => {
-                        assert!(route.is_direct());
-                    }
-                    ConnectDecision::Rejected { .. } => panic!("Should not be rejected"),
+                assert_eq!(response.status, http::StatusCode::OK);
+                assert!(response.tunnel_required.is_some());
+                if let Some(tunnel_info) = response.tunnel_required {
+                    assert!(matches!(tunnel_info.route, ProxyRoute::Direct));
                 }
             }
         }
@@ -469,13 +463,11 @@ mod tests {
             );
 
             let request = create_connect_request("https://example.com:443");
-            let decision = service.handle_connect_request(&request).await.unwrap();
+            let response = service.handle_connect_request(&request).await.unwrap();
 
-            match decision {
-                ConnectDecision::Accept { connection_id, .. } => {
-                    assert_ne!(connection_id.as_bytes(), &[0u8; 16]);
-                }
-                ConnectDecision::Rejected { .. } => panic!("Should not be rejected"),
+            assert!(response.tunnel_required.is_some());
+            if let Some(tunnel_info) = response.tunnel_required {
+                assert_ne!(tunnel_info.connection_id.as_bytes(), &[0u8; 16]);
             }
         }
     }

@@ -3,10 +3,18 @@ use std::collections::HashMap;
 use url::Url;
 
 #[derive(Debug, Clone)]
+pub struct TunnelInfo {
+    pub route: ProxyRoute,
+    pub credentials: Option<Credentials>,
+    pub connection_id: uuid::Uuid,
+}
+
+#[derive(Debug, Clone)]
 pub struct ProxyResponse {
     pub status: StatusCode,
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
+    pub tunnel_required: Option<TunnelInfo>,
 }
 
 impl ProxyResponse {
@@ -15,6 +23,7 @@ impl ProxyResponse {
             status,
             headers: HashMap::new(),
             body: Vec::new(),
+            tunnel_required: None,
         }
     }
 
@@ -25,6 +34,11 @@ impl ProxyResponse {
 
     pub fn with_headers(mut self, headers: HashMap<String, String>) -> Self {
         self.headers = headers;
+        self
+    }
+
+    pub fn with_tunnel(mut self, tunnel_info: TunnelInfo) -> Self {
+        self.tunnel_required = Some(tunnel_info);
         self
     }
 }
@@ -59,6 +73,7 @@ impl ProxyMethod {
         }
     }
 
+    #[allow(dead_code)]
     pub fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "GET" => ProxyMethod::Get,
@@ -80,6 +95,7 @@ pub struct ProxyRequest {
     pub method: ProxyMethod,
     pub target_url: Url,
     pub headers: HashMap<String, String>,
+    #[allow(dead_code)]
     pub version: HttpVersion,
 }
 
@@ -100,6 +116,7 @@ impl ProxyRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum HttpVersion {
     Http10,
     Http11,
@@ -128,10 +145,20 @@ impl ConnectRequest {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum ProxyRoute {
     Direct,
     Upstream { proxy_url: Url },
     Blocked { reason: String },
+}
+impl std::fmt::Display for ProxyRoute {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ProxyRoute::Direct => write!(f, "direct"),
+            ProxyRoute::Upstream { proxy_url, .. } => write!(f, "upstream {}", proxy_url),
+            ProxyRoute::Blocked { reason } => write!(f, "blocked: {}", reason),
+        }
+    }
 }
 
 impl ProxyRoute {
@@ -141,18 +168,6 @@ impl ProxyRoute {
             ProxyRoute::Upstream { proxy_url, .. } => proxy_url.scheme(),
             ProxyRoute::Blocked { .. } => "blocked",
         }
-    }
-
-    pub fn is_direct(&self) -> bool {
-        matches!(self, ProxyRoute::Direct)
-    }
-
-    pub fn is_upstream(&self) -> bool {
-        matches!(self, ProxyRoute::Upstream { .. })
-    }
-
-    pub fn is_blocked(&self) -> bool {
-        matches!(self, ProxyRoute::Blocked { .. })
     }
 }
 
@@ -175,6 +190,7 @@ impl Credentials {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct ConnectionInfo {
     pub id: uuid::Uuid,
     pub method: String,
@@ -196,25 +212,10 @@ impl ConnectionInfo {
         }
     }
 
+    #[allow(dead_code)]
     pub fn close(&mut self) {
         self.closed_at = Some(std::time::Instant::now());
     }
-
-    pub fn duration(&self) -> Option<std::time::Duration> {
-        self.closed_at.map(|closed| closed.duration_since(self.opened_at))
-    }
-}
-
-#[derive(Debug)]
-pub enum ConnectDecision {
-    Accept {
-        route: ProxyRoute,
-        credentials: Option<Credentials>,
-        connection_id: uuid::Uuid,
-    },
-    Rejected {
-        reason: String,
-    },
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

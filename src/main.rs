@@ -6,28 +6,44 @@ use clap::Parser;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
+use log::{error, LevelFilter};
 use rlimit::{getrlimit, setrlimit, Resource};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tracing::error;
-use tracing_subscriber::EnvFilter;
 
 use adapters::{
-    BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperHttpClient, HyperProxyAdapter,
-    PacProxyResolver, ResolvConfListener,
+    BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver,
+    ReqwestHttpClient, ResolvConfListener,
 };
 use domain::{AuthRule, PacRule, ProxyService, ResolvConfRule};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SystemConfiguration {
     max_connections: u64,
+    #[serde(default)]
+    log_level: String,
+}
+
+fn parse_log_level(level: &str) -> LevelFilter {
+    match level.to_lowercase().as_str() {
+        "error" => LevelFilter::Error,
+        "warn" => LevelFilter::Warn,
+        "info" => LevelFilter::Info,
+        "debug" => LevelFilter::Debug,
+        "trace" => LevelFilter::Trace,
+        "off" => LevelFilter::Off,
+        _ => LevelFilter::Info,
+    }
 }
 
 impl Default for SystemConfiguration {
     fn default() -> Self {
-        Self { max_connections: 1024 }
+        Self {
+            max_connections: 1024,
+            log_level: "info".to_string(),
+        }
     }
 }
 
@@ -71,9 +87,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let cfg = confy::load::<ProxyConfig>("nanoproxy", "nanoproxy")?;
 
-    // Initialize tracing
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+    // Initialize logger with configured level, respecting RUST_LOG env var
+    env_logger::Builder::from_default_env()
+        .filter_level(parse_log_level(&cfg.system.log_level))
         .init();
 
     let args = Opts::parse();
@@ -112,17 +128,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         listener.start()?;
     }
 
-    // Create Hyper client with connector
     let connector = HyperConnector::new(resolver.clone());
     let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
         .http1_title_case_headers(true)
         .http1_preserve_header_case(true)
         .build(connector.clone());
 
-    // Create HTTP client adapter (implements HttpClientPort)
-    let http_client = Arc::new(HyperHttpClient::new(connector.clone(), client.clone()));
+    let http_client = Arc::new(ReqwestHttpClient::new());
 
-    // Create domain proxy service
     let proxy_service = Arc::new(ProxyService::new(
         resolver.clone(),
         credentials.clone(),
@@ -130,7 +143,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         http_client,
     ));
 
-    // Create Hyper adapter (for CONNECT tunnels)
     let adapter = Arc::new(HyperProxyAdapter::new(proxy_service, client));
 
     // Bind listener

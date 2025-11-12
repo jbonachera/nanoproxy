@@ -1,11 +1,11 @@
 use crate::domain::{ConnectionInfo, Result};
 use crate::ports::TrackingPort;
 use async_trait::async_trait;
+use log::info;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 use tokio::time::interval;
-use tracing::info;
 use uuid::Uuid;
 
 /// Connection tracker implementation

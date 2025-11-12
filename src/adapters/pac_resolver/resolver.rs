@@ -2,13 +2,12 @@ use super::pac_evaluator::{evaluate_pac, parse_proxy_route};
 use crate::domain::{ProxyError, ProxyRoute, Result};
 use crate::ports::ProxyResolverPort;
 use async_trait::async_trait;
-use log::debug;
+use log::{debug, info};
 use lru::LruCache;
 use reqwest::ClientBuilder;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::info;
 use url::Url;
 
 /// Actor-based PAC resolver implementation
@@ -28,17 +27,24 @@ impl PacProxyResolver {
     async fn load_pac(&self, pac_url: &str) -> Result<String> {
         debug!("Attempting to download PAC file at {}", pac_url);
 
-        let pac_file = ClientBuilder::new()
-            .no_proxy()
-            .build()
-            .map_err(|e| ProxyError::ResolutionFailed(format!("HTTP client error: {}", e)))?
-            .get(pac_url)
-            .send()
-            .await
-            .map_err(|e| ProxyError::ResolutionFailed(format!("PAC download error: {}", e)))?
-            .text()
-            .await
-            .map_err(|e| ProxyError::ResolutionFailed(format!("PAC read error: {}", e)))?;
+        let pac_file = if pac_url.starts_with("file://") {
+            let file_path = pac_url.strip_prefix("file://").unwrap();
+            tokio::fs::read_to_string(file_path)
+                .await
+                .map_err(|e| ProxyError::ResolutionFailed(format!("PAC file read error: {}", e)))?
+        } else {
+            ClientBuilder::new()
+                .no_proxy()
+                .build()
+                .map_err(|e| ProxyError::ResolutionFailed(format!("HTTP client error: {}", e)))?
+                .get(pac_url)
+                .send()
+                .await
+                .map_err(|e| ProxyError::ResolutionFailed(format!("PAC download error: {}", e)))?
+                .text()
+                .await
+                .map_err(|e| ProxyError::ResolutionFailed(format!("PAC read error: {}", e)))?
+        };
 
         let mut cache = self.pac_cache.write().await;
         cache.put(pac_url.to_string(), pac_file.clone());
