@@ -49,7 +49,7 @@ impl Service<Uri> for HyperConnector {
             let routes = resolver
                 .resolve_all_routes(&url)
                 .await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
 
             for route in routes {
                 let addr = match route {

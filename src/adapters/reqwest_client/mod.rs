@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use log::{warn};
+use log::warn;
 use std::collections::HashMap;
 
 use crate::domain::{Credentials, ProxyError, ProxyRequest, ProxyResponse, ProxyRoute, Result};
@@ -38,7 +38,7 @@ impl HttpClientPort for ReqwestHttpClient {
                     let p = reqwest::Proxy::http(proxy_uri)
                         .map_err(|e| ProxyError::InvalidUri(format!("Failed to create proxy: {}", e)))?;
                     if let Some(creds) = credentials {
-                        if creds.password.len() == 0 {
+                        if creds.password.is_empty() {
                             warn!("empty password on request for host {}", proxy_url)
                         }
                         p.basic_auth(&creds.username, &creds.password)
@@ -52,7 +52,6 @@ impl HttpClientPort for ReqwestHttpClient {
             ProxyRoute::Direct => reqwest::Client::builder().no_proxy(),
             ProxyRoute::Blocked { reason } => return Err(ProxyError::ConnectionFailed(reason.clone())),
         };
-
 
         let client = builder
             .build()

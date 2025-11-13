@@ -47,7 +47,7 @@ impl Default for SystemConfiguration {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 struct ProxyConfig {
     #[serde(default)]
     system: SystemConfiguration,
@@ -60,17 +60,6 @@ struct ProxyConfig {
 
     #[serde(default)]
     resolvconf_rules: Option<Vec<ResolvConfRule>>,
-}
-
-impl Default for ProxyConfig {
-    fn default() -> Self {
-        Self {
-            system: SystemConfiguration::default(),
-            auth_rules: None,
-            pac_rules: None,
-            resolvconf_rules: None,
-        }
-    }
 }
 
 #[derive(Parser, Debug)]

@@ -21,7 +21,7 @@ impl CredentialProvider {
         for rule in auth_rules {
             // Execute password command once at initialization
             let password = Self::execute_password_command(&rule.password_command).unwrap_or_else(|_| String::new());
-            if password.len() == 0 {
+            if password.is_empty() {
                 log::error!("Password command returned an empty password.");
                 panic!("invalid password command")
             }
