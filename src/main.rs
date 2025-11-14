@@ -63,7 +63,7 @@ struct ProxyConfig {
 }
 
 #[derive(Parser, Debug)]
-#[clap(version = env!("CARGO_PKG_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
+#[clap(version = env!("NANOPROXY_VERSION"), author = env!("CARGO_PKG_AUTHORS"))]
 pub struct Opts {
     #[clap(long, short = 'p', default_value = "8888")]
     port: u16,
