@@ -39,7 +39,7 @@ jobs:
       - name: Make universal zip
         run: |
           mkdir nanoproxy-macos-universal
-          cp target/aarch64-apple-darwin/release/nanoproxy nanoproxy-macos-universal
+          cp target/universal/release/nanoproxy nanoproxy-macos-universal
           zip -r nanoproxy-macos-universal.zip nanoproxy-macos-universal
 
       - name: Make SHA256 checksum
