@@ -21,6 +21,10 @@ impl CredentialProvider {
         for rule in auth_rules {
             // Execute password command once at initialization
             let password = Self::execute_password_command(&rule.password_command).unwrap_or_else(|_| String::new());
+            if password.is_empty() {
+                log::error!("Password command returned an empty password.");
+                panic!("invalid password command")
+            }
             rules_map.insert(rule.remote_pattern, (rule.username, password));
         }
 
@@ -82,7 +86,6 @@ impl CredentialsPort for CredentialProvider {
             let mut cache = self.cache.write().await;
             cache.put(host.to_string(), creds.clone());
         }
-
         Ok(creds)
     }
 
