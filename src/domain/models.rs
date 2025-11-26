@@ -238,3 +238,11 @@ pub struct ResolvConfRule {
     pub when_match: Option<String>,
     pub when_no_match: Option<String>,
 }
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GatewayRule {
+    pub default_gateway_subnet: String,
+    pub pac_url: String,
+    pub when_match: Option<String>,
+    pub when_no_match: Option<String>,
+}

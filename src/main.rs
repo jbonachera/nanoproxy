@@ -17,7 +17,7 @@ use adapters::{
     BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver,
     ReqwestHttpClient, ResolvConfListener,
 };
-use domain::{AuthRule, PacRule, ProxyService, ResolvConfRule};
+use domain::{AuthRule, GatewayRule, PacRule, ProxyService, ResolvConfRule};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct SystemConfiguration {
@@ -53,6 +53,9 @@ struct ProxyConfig {
     system: SystemConfiguration,
 
     #[serde(default)]
+    detection_type: Option<String>,
+
+    #[serde(default)]
     auth_rules: Option<Vec<AuthRule>>,
 
     #[serde(default)]
@@ -60,6 +63,9 @@ struct ProxyConfig {
 
     #[serde(default)]
     resolvconf_rules: Option<Vec<ResolvConfRule>>,
+
+    #[serde(default)]
+    gateway_rules: Option<Vec<GatewayRule>>,
 }
 
 #[derive(Parser, Debug)]
@@ -187,4 +193,185 @@ fn print_greeting(listener: &TcpListener) {
     println!("export no_proxy=localhost,127.0.0.0/8,*.local,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16;");
     println!();
     println!("Connection logs will appear below.");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write;
+
+    fn create_test_config(name: &str, content: &str) -> std::path::PathBuf {
+        let temp_dir = std::env::temp_dir();
+        let config_dir = temp_dir.join(format!("nanoproxy_test_{}", name));
+        fs::create_dir_all(&config_dir).expect("Failed to create test config dir");
+
+        let config_file = config_dir.join("nanoproxy.toml");
+        let mut file = fs::File::create(&config_file).expect("Failed to create test config file");
+        file.write_all(content.as_bytes()).expect("Failed to write test config");
+
+        config_file
+    }
+
+    fn cleanup_test_config(config_file: &std::path::Path) {
+        if let Some(parent) = config_file.parent() {
+            let _ = fs::remove_dir_all(parent);
+        }
+    }
+
+    #[test]
+    fn test_config_with_detection_type_dns() {
+        let toml_content = r#"detection_type = "dns"
+
+[system]
+max_connections = 1024
+log_level = "info"
+
+[[resolvconf_rules]]
+resolver_subnet = "10.241.52.0/24"
+pac_url = "http://pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("dns_detection", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert_eq!(config.detection_type, Some("dns".to_string()));
+        assert!(config.resolvconf_rules.is_some());
+        assert_eq!(config.resolvconf_rules.as_ref().unwrap().len(), 1);
+        assert_eq!(config.resolvconf_rules.as_ref().unwrap()[0].resolver_subnet, "10.241.52.0/24");
+    }
+
+    #[test]
+    fn test_config_with_detection_type_route() {
+        let toml_content = r#"detection_type = "route"
+
+[system]
+max_connections = 1024
+
+[[gateway_rules]]
+default_gateway_subnet = "192.168.1.0/24"
+pac_url = "http://pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("route_detection", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert_eq!(config.detection_type, Some("route".to_string()));
+        assert!(config.gateway_rules.is_some());
+        assert_eq!(config.gateway_rules.as_ref().unwrap().len(), 1);
+        assert_eq!(config.gateway_rules.as_ref().unwrap()[0].default_gateway_subnet, "192.168.1.0/24");
+    }
+
+    #[test]
+    fn test_config_backwards_compatibility() {
+        let toml_content = r#"[system]
+max_connections = 2048
+
+[[resolvconf_rules]]
+resolver_subnet = "10.241.52.0/24"
+pac_url = "http://pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("backwards_compat", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert_eq!(config.detection_type, None);
+        assert!(config.resolvconf_rules.is_some());
+        assert_eq!(config.system.max_connections, 2048);
+    }
+
+    #[test]
+    fn test_gateway_rule_with_commands() {
+        let toml_content = r#"detection_type = "route"
+
+[[gateway_rules]]
+default_gateway_subnet = "192.168.1.0/24"
+pac_url = "http://pac.example.com/proxy.pac"
+when_match = "echo 'Gateway matched'"
+when_no_match = "echo 'Gateway not matched'"
+"#;
+
+        let config_file = create_test_config("gateway_commands", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert!(config.gateway_rules.is_some());
+        let rules = config.gateway_rules.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].default_gateway_subnet, "192.168.1.0/24");
+        assert_eq!(rules[0].pac_url, "http://pac.example.com/proxy.pac");
+        assert_eq!(rules[0].when_match, Some("echo 'Gateway matched'".to_string()));
+        assert_eq!(rules[0].when_no_match, Some("echo 'Gateway not matched'".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_gateway_rules() {
+        let toml_content = r#"detection_type = "route"
+
+[[gateway_rules]]
+default_gateway_subnet = "192.168.1.0/24"
+pac_url = "http://pac1.example.com/proxy.pac"
+
+[[gateway_rules]]
+default_gateway_subnet = "10.0.0.0/8"
+pac_url = "http://pac2.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("multiple_gateways", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert!(config.gateway_rules.is_some());
+        let rules = config.gateway_rules.unwrap();
+        assert_eq!(rules.len(), 2);
+        assert_eq!(rules[0].default_gateway_subnet, "192.168.1.0/24");
+        assert_eq!(rules[1].default_gateway_subnet, "10.0.0.0/8");
+    }
+
+    #[test]
+    fn test_mixed_rules_with_dns_detection() {
+        let toml_content = r#"detection_type = "dns"
+
+[[resolvconf_rules]]
+resolver_subnet = "10.241.52.0/24"
+pac_url = "http://dns-pac.example.com/proxy.pac"
+
+[[gateway_rules]]
+default_gateway_subnet = "192.168.1.0/24"
+pac_url = "http://gateway-pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("mixed_dns", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert_eq!(config.detection_type, Some("dns".to_string()));
+        assert!(config.resolvconf_rules.is_some());
+        assert!(config.gateway_rules.is_some());
+    }
+
+    #[test]
+    fn test_mixed_rules_with_route_detection() {
+        let toml_content = r#"detection_type = "route"
+
+[[resolvconf_rules]]
+resolver_subnet = "10.241.52.0/24"
+pac_url = "http://dns-pac.example.com/proxy.pac"
+
+[[gateway_rules]]
+default_gateway_subnet = "192.168.1.0/24"
+pac_url = "http://gateway-pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("mixed_route", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert_eq!(config.detection_type, Some("route".to_string()));
+        assert!(config.resolvconf_rules.is_some());
+        assert!(config.gateway_rules.is_some());
+    }
 }
