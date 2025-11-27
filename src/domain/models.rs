@@ -74,6 +74,7 @@ impl ProxyMethod {
     }
 
     #[allow(dead_code)]
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
             "GET" => ProxyMethod::Get,
@@ -241,7 +242,9 @@ pub struct ResolvConfRule {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GatewayRule {
-    pub default_gateway_subnet: String,
+    pub default_route_interface: String,
+    #[serde(default)]
+    pub interface_ip_subnet: Option<String>,
     pub pac_url: String,
     pub when_match: Option<String>,
     pub when_no_match: Option<String>,

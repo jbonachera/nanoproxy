@@ -16,6 +16,7 @@ ipnet = "2.11.0"
 resolv-conf = "0.7.0"
 notify-debouncer-mini = "0.7.0"
 netdev = "0.37"
+wildmatch = "2.3"
 tokio = { version = "1", features = ["full", "net"] }
 clap = { version = "4", features = ["derive"] }
 confy = "2.0.0"

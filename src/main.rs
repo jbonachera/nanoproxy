@@ -6,7 +6,7 @@ use clap::Parser;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto::Builder as ServerBuilder;
-use log::{error, LevelFilter};
+use log::{error, info, LevelFilter};
 use rlimit::{getrlimit, setrlimit, Resource};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -14,8 +14,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use adapters::{
-    BeaconPoller, ConnectionTracker, CredentialProvider, HyperConnector, HyperProxyAdapter, PacProxyResolver,
-    ReqwestHttpClient, ResolvConfListener,
+    BeaconPoller, ConnectionTracker, CredentialProvider, GatewayListener, HyperConnector, HyperProxyAdapter,
+    PacProxyResolver, ReqwestHttpClient, ResolvConfListener,
 };
 use domain::{AuthRule, GatewayRule, PacRule, ProxyService, ResolvConfRule};
 
@@ -117,10 +117,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         poller.start();
     }
 
-    // Start resolvconf listener if configured
-    if let Some(resolvconf_rules) = cfg.resolvconf_rules {
-        let listener = ResolvConfListener::new(resolvconf_rules, resolver.clone());
-        listener.start()?;
+    // Start network detection based on detection_type
+    let detection_type = cfg.detection_type.as_deref().unwrap_or("dns");
+    match detection_type {
+        "dns" => {
+            info!("Starting DNS-based detection");
+            if let Some(resolvconf_rules) = cfg.resolvconf_rules {
+                let listener = ResolvConfListener::new(resolvconf_rules, resolver.clone());
+                listener.start()?;
+            }
+        }
+        "route" => {
+            info!("Starting Gateway-based detection");
+            if let Some(gateway_rules) = cfg.gateway_rules {
+                let listener = GatewayListener::new(gateway_rules, resolver.clone());
+                listener.start()?;
+            }
+        }
+        other => {
+            log::warn!("Unknown detection_type '{}', defaulting to 'dns'", other);
+            if let Some(resolvconf_rules) = cfg.resolvconf_rules {
+                let listener = ResolvConfListener::new(resolvconf_rules, resolver.clone());
+                listener.start()?;
+            }
+        }
     }
 
     let connector = HyperConnector::new(resolver.clone());
@@ -239,7 +259,10 @@ pac_url = "http://pac.example.com/proxy.pac"
         assert_eq!(config.detection_type, Some("dns".to_string()));
         assert!(config.resolvconf_rules.is_some());
         assert_eq!(config.resolvconf_rules.as_ref().unwrap().len(), 1);
-        assert_eq!(config.resolvconf_rules.as_ref().unwrap()[0].resolver_subnet, "10.241.52.0/24");
+        assert_eq!(
+            config.resolvconf_rules.as_ref().unwrap()[0].resolver_subnet,
+            "10.241.52.0/24"
+        );
     }
 
     #[test]
@@ -250,7 +273,7 @@ pac_url = "http://pac.example.com/proxy.pac"
 max_connections = 1024
 
 [[gateway_rules]]
-default_gateway_subnet = "192.168.1.0/24"
+default_route_interface = "en0"
 pac_url = "http://pac.example.com/proxy.pac"
 "#;
 
@@ -261,7 +284,7 @@ pac_url = "http://pac.example.com/proxy.pac"
         assert_eq!(config.detection_type, Some("route".to_string()));
         assert!(config.gateway_rules.is_some());
         assert_eq!(config.gateway_rules.as_ref().unwrap().len(), 1);
-        assert_eq!(config.gateway_rules.as_ref().unwrap()[0].default_gateway_subnet, "192.168.1.0/24");
+        assert_eq!(config.gateway_rules.as_ref().unwrap()[0].default_route_interface, "en0");
     }
 
     #[test]
@@ -288,10 +311,10 @@ pac_url = "http://pac.example.com/proxy.pac"
         let toml_content = r#"detection_type = "route"
 
 [[gateway_rules]]
-default_gateway_subnet = "192.168.1.0/24"
+default_route_interface = "en0"
 pac_url = "http://pac.example.com/proxy.pac"
-when_match = "echo 'Gateway matched'"
-when_no_match = "echo 'Gateway not matched'"
+when_match = "echo 'Interface matched'"
+when_no_match = "echo 'Interface not matched'"
 "#;
 
         let config_file = create_test_config("gateway_commands", toml_content);
@@ -301,10 +324,33 @@ when_no_match = "echo 'Gateway not matched'"
         assert!(config.gateway_rules.is_some());
         let rules = config.gateway_rules.unwrap();
         assert_eq!(rules.len(), 1);
-        assert_eq!(rules[0].default_gateway_subnet, "192.168.1.0/24");
+        assert_eq!(rules[0].default_route_interface, "en0");
+        assert_eq!(rules[0].interface_ip_subnet, None);
         assert_eq!(rules[0].pac_url, "http://pac.example.com/proxy.pac");
-        assert_eq!(rules[0].when_match, Some("echo 'Gateway matched'".to_string()));
-        assert_eq!(rules[0].when_no_match, Some("echo 'Gateway not matched'".to_string()));
+        assert_eq!(rules[0].when_match, Some("echo 'Interface matched'".to_string()));
+        assert_eq!(rules[0].when_no_match, Some("echo 'Interface not matched'".to_string()));
+    }
+
+    #[test]
+    fn test_gateway_rule_with_ip_subnet() {
+        let toml_content = r#"detection_type = "route"
+
+[[gateway_rules]]
+default_route_interface = "en0"
+interface_ip_subnet = "192.168.1.0/24"
+pac_url = "http://pac.example.com/proxy.pac"
+"#;
+
+        let config_file = create_test_config("gateway_ip_subnet", toml_content);
+        let config: ProxyConfig = confy::load_path(&config_file).expect("Failed to load config");
+        cleanup_test_config(&config_file);
+
+        assert!(config.gateway_rules.is_some());
+        let rules = config.gateway_rules.unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].default_route_interface, "en0");
+        assert_eq!(rules[0].interface_ip_subnet, Some("192.168.1.0/24".to_string()));
+        assert_eq!(rules[0].pac_url, "http://pac.example.com/proxy.pac");
     }
 
     #[test]
@@ -312,11 +358,11 @@ when_no_match = "echo 'Gateway not matched'"
         let toml_content = r#"detection_type = "route"
 
 [[gateway_rules]]
-default_gateway_subnet = "192.168.1.0/24"
+default_route_interface = "en0"
 pac_url = "http://pac1.example.com/proxy.pac"
 
 [[gateway_rules]]
-default_gateway_subnet = "10.0.0.0/8"
+default_route_interface = "utun*"
 pac_url = "http://pac2.example.com/proxy.pac"
 "#;
 
@@ -327,8 +373,8 @@ pac_url = "http://pac2.example.com/proxy.pac"
         assert!(config.gateway_rules.is_some());
         let rules = config.gateway_rules.unwrap();
         assert_eq!(rules.len(), 2);
-        assert_eq!(rules[0].default_gateway_subnet, "192.168.1.0/24");
-        assert_eq!(rules[1].default_gateway_subnet, "10.0.0.0/8");
+        assert_eq!(rules[0].default_route_interface, "en0");
+        assert_eq!(rules[1].default_route_interface, "utun*");
     }
 
     #[test]
@@ -340,7 +386,7 @@ resolver_subnet = "10.241.52.0/24"
 pac_url = "http://dns-pac.example.com/proxy.pac"
 
 [[gateway_rules]]
-default_gateway_subnet = "192.168.1.0/24"
+default_route_interface = "en0"
 pac_url = "http://gateway-pac.example.com/proxy.pac"
 "#;
 
@@ -362,7 +408,7 @@ resolver_subnet = "10.241.52.0/24"
 pac_url = "http://dns-pac.example.com/proxy.pac"
 
 [[gateway_rules]]
-default_gateway_subnet = "192.168.1.0/24"
+default_route_interface = "en0"
 pac_url = "http://gateway-pac.example.com/proxy.pac"
 "#;
 

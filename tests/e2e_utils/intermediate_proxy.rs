@@ -142,8 +142,7 @@ impl IntermediateProxy {
 
     fn parse_http_url(url: &str) -> (String, String, String) {
         // Parse URLs like http://example.com/path or just /path
-        let (host, port, path) = if url.starts_with("http://") {
-            let url = &url[7..]; // Remove "http://"
+        let (host, port, path) = if let Some(url) = url.strip_prefix("http://") {
             if let Some(slash_pos) = url.find('/') {
                 let (host_port, path) = url.split_at(slash_pos);
                 if let Some(colon_pos) = host_port.find(':') {
@@ -158,8 +157,7 @@ impl IntermediateProxy {
             } else {
                 (url.to_string(), "80".to_string(), "/".to_string())
             }
-        } else if url.starts_with("https://") {
-            let url = &url[8..]; // Remove "https://"
+        } else if let Some(url) = url.strip_prefix("https://") {
             if let Some(slash_pos) = url.find('/') {
                 let (host_port, path) = url.split_at(slash_pos);
                 if let Some(colon_pos) = host_port.find(':') {

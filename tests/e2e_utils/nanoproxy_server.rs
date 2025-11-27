@@ -58,31 +58,26 @@ impl TestNanoproxyServer {
         let adapter = Arc::new(HyperProxyAdapter::new(proxy_service, client));
 
         let server_handle = tokio::spawn(async move {
-            loop {
-                match listener.accept().await {
-                    Ok((stream, _)) => {
-                        let io = TokioIo::new(stream);
+            while let Ok((stream, _)) = listener.accept().await {
+                let io = TokioIo::new(stream);
+                let adapter = adapter.clone();
+
+                tokio::spawn(async move {
+                    let service_fn = service_fn(move |req| {
                         let adapter = adapter.clone();
+                        async move { Ok::<_, hyper::Error>(adapter.handle(req).await) }
+                    });
 
-                        tokio::spawn(async move {
-                            let service_fn = service_fn(move |req| {
-                                let adapter = adapter.clone();
-                                async move { Ok::<_, hyper::Error>(adapter.handle(req).await) }
-                            });
-
-                            if let Err(_err) = ServerBuilder::new(hyper_util::rt::TokioExecutor::new())
-                                .http1()
-                                .preserve_header_case(true)
-                                .title_case_headers(true)
-                                .serve_connection_with_upgrades(io, service_fn)
-                                .await
-                            {
-                                // Silently handle errors in test
-                            }
-                        });
+                    if let Err(_err) = ServerBuilder::new(hyper_util::rt::TokioExecutor::new())
+                        .http1()
+                        .preserve_header_case(true)
+                        .title_case_headers(true)
+                        .serve_connection_with_upgrades(io, service_fn)
+                        .await
+                    {
+                        // Silently handle errors in test
                     }
-                    Err(_) => break,
-                }
+                });
             }
         });
 

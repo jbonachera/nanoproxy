@@ -303,7 +303,7 @@ mod tests {
                 let resolver = MockResolver::new(ProxyRoute::Direct);
                 let credentials = MockCredentials::new(None);
                 let tracker = MockTracker::new();
-                let http_client = MockHttpClient::new(status.clone());
+                let http_client = MockHttpClient::new(status);
 
                 let service = ProxyService::new(
                     Arc::new(resolver),
