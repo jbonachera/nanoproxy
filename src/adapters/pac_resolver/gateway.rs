@@ -21,21 +21,27 @@ impl GatewayListener {
         let rules_clone = self.rules.clone();
 
         Ok(tokio::spawn(async move {
-            if let Err(e) = Self::refresh_rules_static(&rules_clone, &resolver_clone).await {
+            let mut last_pac_url: Option<String> = None;
+
+            if let Err(e) = Self::refresh_rules_static(&rules_clone, &resolver_clone, &mut last_pac_url).await {
                 log::info!("Failed initial gateway refresh: {:?}", e);
             }
 
             loop {
                 tokio::time::sleep(Duration::from_secs(5)).await;
 
-                if let Err(e) = Self::refresh_rules_static(&rules_clone, &resolver_clone).await {
+                if let Err(e) = Self::refresh_rules_static(&rules_clone, &resolver_clone, &mut last_pac_url).await {
                     log::info!("Failed to detect gateway: {:?}", e);
                 }
             }
         }))
     }
 
-    async fn refresh_rules_static(rules: &[GatewayRule], resolver: &Arc<dyn ProxyResolverPort>) -> Result<()> {
+    async fn refresh_rules_static(
+        rules: &[GatewayRule],
+        resolver: &Arc<dyn ProxyResolverPort>,
+        last_pac_url: &mut Option<String>,
+    ) -> Result<()> {
         let interface = netdev::get_default_interface()
             .map_err(|e| ProxyError::ResolutionFailed(format!("Cannot get default interface: {}", e)))?;
 
@@ -45,6 +51,9 @@ impl GatewayListener {
         debug!("Interface IPv4 addresses: {:?}", interface.ipv4);
 
         let mut matched = false;
+        let mut new_pac_url: Option<String> = None;
+        let mut matched_rule_index: Option<usize> = None;
+
         for (index, rule) in rules.iter().enumerate() {
             debug!("Checking rule #{}: {:?}", index, rule);
             let pattern = WildMatch::new(&rule.default_route_interface);
@@ -74,30 +83,51 @@ impl GatewayListener {
             };
 
             if interface_matches && ip_matches {
-                debug!("✓ Rule #{} matched! Setting PAC URL: {}", index, rule.pac_url);
-                resolver.update_pac_url(Some(rule.pac_url.clone())).await?;
+                debug!("✓ Rule #{} matched!", index);
                 matched = true;
-
-                if let Some(cmd) = &rule.when_match {
-                    warn!("Running command: {}", cmd);
-                    let _ = std::process::Command::new("sh").arg("-c").arg(cmd).output();
-                }
+                new_pac_url = Some(rule.pac_url.clone());
+                matched_rule_index = Some(index);
                 break;
             } else {
                 debug!(
                     "✗ Rule #{} did NOT match (interface_matches={}, ip_matches={})",
                     index, interface_matches, ip_matches
                 );
-                if let Some(cmd) = &rule.when_no_match {
-                    warn!("Running command: {}", cmd);
-                    let _ = std::process::Command::new("sh").arg("-c").arg(cmd).output();
-                }
             }
         }
 
         if !matched {
-            debug!("No rules matched, clearing PAC URL");
-            resolver.update_pac_url(None).await?;
+            new_pac_url = None;
+        }
+
+        if new_pac_url != *last_pac_url {
+            debug!("Network changed: {:?} -> {:?}", last_pac_url, new_pac_url);
+
+            if let Some(url) = &new_pac_url {
+                debug!("Setting PAC URL: {}", url);
+            } else {
+                debug!("Clearing PAC URL");
+            }
+
+            resolver.update_pac_url(new_pac_url.clone()).await?;
+
+            if let Some(index) = matched_rule_index {
+                if let Some(cmd) = &rules[index].when_match {
+                    warn!("Running when_match command: {}", cmd);
+                    let _ = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+                }
+            } else {
+                for rule in rules {
+                    if let Some(cmd) = &rule.when_no_match {
+                        warn!("Running when_no_match command: {}", cmd);
+                        let _ = std::process::Command::new("sh").arg("-c").arg(cmd).output();
+                    }
+                }
+            }
+
+            *last_pac_url = new_pac_url;
+        } else {
+            debug!("Network unchanged, skipping PAC update");
         }
 
         Ok(())
@@ -113,7 +143,7 @@ mod tests {
     use url::Url;
 
     struct MockResolver {
-        update_count: AtomicUsize,
+        pub update_count: AtomicUsize,
         last_pac_url: tokio::sync::RwLock<Option<String>>,
     }
 
@@ -270,6 +300,32 @@ mod tests {
         let pac_url = resolver.get_last_pac_url().await;
         assert!(pac_url.is_some());
         assert_eq!(pac_url.unwrap(), "http://test-compat.pac");
+
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn test_gateway_listener_skips_update_when_network_unchanged() {
+        let rules = vec![GatewayRule {
+            default_route_interface: "*".to_string(),
+            interface_ip_subnet: None,
+            pac_url: "http://test.pac".to_string(),
+            when_match: None,
+            when_no_match: None,
+        }];
+
+        let resolver = Arc::new(MockResolver::new());
+        let listener = GatewayListener::new(rules, resolver.clone());
+
+        let handle = listener.start().expect("Failed to start listener");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let initial_count = resolver.update_count.load(Ordering::SeqCst);
+        assert_eq!(initial_count, 1);
+
+        tokio::time::sleep(Duration::from_secs(6)).await;
+        let final_count = resolver.update_count.load(Ordering::SeqCst);
+        assert_eq!(final_count, 1);
 
         handle.abort();
     }
