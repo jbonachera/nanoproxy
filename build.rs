@@ -7,7 +7,7 @@ fn main() {
 
 fn get_version() -> String {
     if let Ok(output) = Command::new("git")
-        .args(&["describe", "--tags", "--always", "--dirty"])
+        .args(["describe", "--tags", "--always", "--dirty"])
         .output()
     {
         if output.status.success() {
@@ -18,10 +18,7 @@ fn get_version() -> String {
         }
     }
 
-    if let Ok(output) = Command::new("git")
-        .args(&["rev-parse", "--short", "HEAD"])
-        .output()
-    {
+    if let Ok(output) = Command::new("git").args(["rev-parse", "--short", "HEAD"]).output() {
         if output.status.success() {
             let commit = String::from_utf8_lossy(&output.stdout).trim().to_string();
             if !commit.is_empty() {
