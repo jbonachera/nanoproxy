@@ -9,12 +9,18 @@ use tokio::task::JoinHandle;
 
 pub struct HostPreservingProxy {
     listener: TcpListener,
+    target_override: Option<SocketAddr>,
 }
 
 impl HostPreservingProxy {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Ok(Self { listener })
+        Ok(Self { listener, target_override: None })
+    }
+
+    pub async fn new_with_target(target: SocketAddr) -> Result<Self, Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        Ok(Self { listener, target_override: Some(target) })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -22,11 +28,12 @@ impl HostPreservingProxy {
     }
 
     pub async fn run(self) -> JoinHandle<()> {
+        let target_override = self.target_override;
         tokio::spawn(async move {
             loop {
                 match self.listener.accept().await {
                     Ok((socket, _)) => {
-                        tokio::spawn(Self::handle_connection(socket));
+                        tokio::spawn(Self::handle_connection(socket, target_override));
                     }
                     Err(_) => break,
                 }
@@ -34,7 +41,7 @@ impl HostPreservingProxy {
         })
     }
 
-    async fn handle_connection(mut socket: TcpStream) {
+    async fn handle_connection(mut socket: TcpStream, target_override: Option<SocketAddr>) {
         let mut buffer = vec![0; 4096];
         match socket.read(&mut buffer).await {
             Ok(n) if n > 0 => {
@@ -43,14 +50,26 @@ impl HostPreservingProxy {
                 if let Some(first_line) = lines.first() {
                     let parts: Vec<&str> = first_line.split_whitespace().collect();
                     if parts.len() >= 2 {
-                        let (host, port, path) = parse_absolute_url(parts[1]);
-                        forward_request(&mut socket, &request, &host, &port, &path).await;
+                        let (target_host, target_port, path) = match target_override {
+                            Some(addr) => (addr.ip().to_string(), addr.port().to_string(), extract_path(parts[1])),
+                            None => parse_absolute_url(parts[1]),
+                        };
+                        forward_request(&mut socket, &request, &target_host, &target_port, &path).await;
                     }
                 }
             }
             _ => {}
         }
     }
+}
+
+fn extract_path(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("http://") {
+        if let Some(slash_pos) = rest.find('/') {
+            return rest[slash_pos..].to_string();
+        }
+    }
+    "/".to_string()
 }
 
 fn parse_absolute_url(url: &str) -> (String, String, String) {
