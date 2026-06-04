@@ -27,7 +27,10 @@ async fn test_host_header_preserved_on_direct_route() {
         "GET http://{}/ HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         echo_addr, echo_addr
     );
-    stream.write_all(request.as_bytes()).await.expect("Failed to write request");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("Failed to write request");
 
     let mut response_data = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -56,7 +59,9 @@ async fn test_host_header_preserved_through_upstream_proxy() {
     let echo_addr = echo_server.local_addr();
     let _echo_handle = echo_server.run().await;
 
-    let preserving_proxy = HostPreservingProxy::new().await.expect("Failed to start host-preserving proxy");
+    let preserving_proxy = HostPreservingProxy::new()
+        .await
+        .expect("Failed to start host-preserving proxy");
     let proxy_addr = preserving_proxy.local_addr();
     let _proxy_handle = preserving_proxy.run().await;
 
@@ -83,7 +88,10 @@ async fn test_host_header_preserved_through_upstream_proxy() {
         "GET http://{}/ HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         echo_addr, echo_addr
     );
-    stream.write_all(request.as_bytes()).await.expect("Failed to write request");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("Failed to write request");
 
     let mut response_data = Vec::new();
     let mut chunk = [0u8; 4096];
@@ -140,7 +148,10 @@ async fn test_host_header_preserved_for_named_host_with_port() {
         .expect("Failed to connect to nanoproxy");
 
     let request = "GET http://app.internal.example.com:8080/api HTTP/1.1\r\nHost: app.internal.example.com:8080\r\nConnection: close\r\n\r\n";
-    stream.write_all(request.as_bytes()).await.expect("Failed to write request");
+    stream
+        .write_all(request.as_bytes())
+        .await
+        .expect("Failed to write request");
 
     let mut response_data = Vec::new();
     let mut chunk = [0u8; 4096];

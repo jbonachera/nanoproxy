@@ -14,14 +14,10 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: jdx/mise-action@v2
 
       - name: Ensure formatting
-        run: cargo fmt --check
+        run: mise run fmt:check
 
       - name: Ensure code validity
-        run: cargo build --release --target aarch64-apple-darwin
+        run: mise run build:aarch64

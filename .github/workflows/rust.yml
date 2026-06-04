@@ -16,19 +16,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: stable
-          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: jdx/mise-action@v2
 
       - name: Build aarch64
-        run: cargo build --release --target aarch64-apple-darwin
+        run: mise run build:aarch64
 
       - name: Build x86
-        run: cargo build --release --target x86_64-apple-darwin
+        run: mise run build:x86
 
       - run: mkdir -p target/universal/release
+
       - name: Combine Binaries into Universal Binary
         run: >
           lipo -create -output
@@ -45,18 +42,11 @@ jobs:
       - name: Make SHA256 checksum
         run: shasum -a 256 nanoproxy-macos-universal.zip > nanoproxy-macos-universal.zip.sha256sum
 
-      - name: Upload universal to Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: nanoproxy-macos-universal.zip
-          tag: ${{ github.ref }}
-          overwrite: true
-
-      - name: Upload SHA256 to Release
-        uses: svenstaro/upload-release-action@v2
-        with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: nanoproxy-macos-universal.zip.sha256sum
-          tag: ${{ github.ref }}
-          overwrite: true
+      - name: Upload assets to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" \
+            nanoproxy-macos-universal.zip \
+            nanoproxy-macos-universal.zip.sha256sum \
+            --clobber

@@ -15,12 +15,18 @@ pub struct HostPreservingProxy {
 impl HostPreservingProxy {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Ok(Self { listener, target_override: None })
+        Ok(Self {
+            listener,
+            target_override: None,
+        })
     }
 
     pub async fn new_with_target(target: SocketAddr) -> Result<Self, Box<dyn std::error::Error>> {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
-        Ok(Self { listener, target_override: Some(target) })
+        Ok(Self {
+            listener,
+            target_override: Some(target),
+        })
     }
 
     pub fn local_addr(&self) -> SocketAddr {
@@ -126,7 +132,11 @@ fn to_origin_form(request: &str, path: &str) -> String {
     }
 
     let method = first_line_parts[0];
-    let version = if first_line_parts.len() >= 3 { first_line_parts[2] } else { "HTTP/1.1" };
+    let version = if first_line_parts.len() >= 3 {
+        first_line_parts[2]
+    } else {
+        "HTTP/1.1"
+    };
 
     let mut result = format!("{} {} {}\r\n", method, path, version);
 
