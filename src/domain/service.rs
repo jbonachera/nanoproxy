@@ -32,6 +32,10 @@ impl ProxyService {
         let route = self.resolver.resolve_route(&request.target_url).await?;
         log::debug!("Resolved route to {}: {}", &request.target_url, route);
 
+        if let Some(forbidden) = blocked_response(&route) {
+            return Ok(forbidden);
+        }
+
         let credentials = self.get_credentials_for_route(&route).await?;
 
         let conn_info = ConnectionInfo::new(
@@ -53,9 +57,8 @@ impl ProxyService {
         let route = self.resolver.resolve_route(&request.target_url).await?;
         log::debug!("Resolved route to {}: {}", &request.target_url, route);
 
-        if let ProxyRoute::Blocked { reason } = &route {
-            return Ok(ProxyResponse::new(http::StatusCode::FORBIDDEN)
-                .with_body(format!("Route blocked: {}", reason).into_bytes()));
+        if let Some(forbidden) = blocked_response(&route) {
+            return Ok(forbidden);
         }
 
         let credentials = self.get_credentials_for_route(&route).await?;
@@ -92,6 +95,16 @@ impl ProxyService {
             }
             _ => Ok(None),
         }
+    }
+}
+
+fn blocked_response(route: &ProxyRoute) -> Option<ProxyResponse> {
+    match route {
+        ProxyRoute::Blocked { reason } => Some(
+            ProxyResponse::new(http::StatusCode::FORBIDDEN)
+                .with_body(format!("Route blocked: {}", reason).into_bytes()),
+        ),
+        _ => None,
     }
 }
 
@@ -198,18 +211,28 @@ mod tests {
         pub struct MockHttpClient {
             pub status: http::StatusCode,
             pub failure: Option<crate::domain::ProxyError>,
+            pub execute_call_count: Arc<AtomicUsize>,
         }
 
         impl MockHttpClient {
             pub fn new(status: http::StatusCode) -> Self {
-                Self { status, failure: None }
+                Self {
+                    status,
+                    failure: None,
+                    execute_call_count: Arc::new(AtomicUsize::new(0)),
+                }
             }
 
             pub fn failing(error: crate::domain::ProxyError) -> Self {
                 Self {
                     status: http::StatusCode::OK,
                     failure: Some(error),
+                    execute_call_count: Arc::new(AtomicUsize::new(0)),
                 }
+            }
+
+            pub fn execute_calls(&self) -> usize {
+                self.execute_call_count.load(Ordering::SeqCst)
             }
         }
 
@@ -221,6 +244,7 @@ mod tests {
                 _route: &ProxyRoute,
                 _credentials: Option<&Credentials>,
             ) -> Result<ProxyResponse> {
+                self.execute_call_count.fetch_add(1, Ordering::SeqCst);
                 match &self.failure {
                     Some(error) => Err(error.clone()),
                     None => Ok(ProxyResponse::new(self.status)),
@@ -348,6 +372,33 @@ mod tests {
             let response = service.handle_http_request(&request).await.unwrap();
 
             assert_eq!(response.status, http::StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn blocked_route() {
+            let blocked_route = ProxyRoute::Blocked {
+                reason: "Test block reason".to_string(),
+            };
+            let resolver = MockResolver::new(blocked_route);
+            let credentials = MockCredentials::new(None);
+            let tracker = MockTracker::new();
+            let http_client = MockHttpClient::new(http::StatusCode::OK);
+
+            let service = ProxyService::new(
+                Arc::new(resolver),
+                Arc::new(credentials),
+                Arc::new(tracker.clone()),
+                Arc::new(http_client.clone()),
+            );
+
+            let request = create_proxy_request(ProxyMethod::Get, "http://example.com");
+            let response = service.handle_http_request(&request).await.unwrap();
+
+            assert_eq!(response.status, http::StatusCode::FORBIDDEN);
+            assert_eq!(response.body, b"Route blocked: Test block reason".to_vec());
+            assert_eq!(http_client.execute_calls(), 0);
+            assert_eq!(tracker.track_calls(), 0);
+            assert_eq!(tracker.close_calls(), 0);
         }
 
         #[tokio::test]
