@@ -42,11 +42,11 @@ impl ProxyService {
         let conn_id = conn_info.id;
         self.tracker.track_connection(conn_info).await?;
 
-        let response = self.http_client.execute(request, &route, credentials.as_ref()).await?;
+        let response = self.http_client.execute(request, &route, credentials.as_ref()).await;
 
         self.tracker.close_connection(conn_id).await?;
 
-        Ok(response)
+        Ok(response?)
     }
 
     pub async fn handle_connect_request(&self, request: &ConnectRequest) -> Result<ProxyResponse> {
@@ -98,7 +98,7 @@ impl ProxyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::ProxyMethod;
+    use crate::domain::{ProxyError, ProxyMethod};
     use async_trait::async_trait;
     use http;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -197,11 +197,19 @@ mod tests {
         #[derive(Clone)]
         pub struct MockHttpClient {
             pub status: http::StatusCode,
+            pub failure: Option<crate::domain::ProxyError>,
         }
 
         impl MockHttpClient {
             pub fn new(status: http::StatusCode) -> Self {
-                Self { status }
+                Self { status, failure: None }
+            }
+
+            pub fn failing(error: crate::domain::ProxyError) -> Self {
+                Self {
+                    status: http::StatusCode::OK,
+                    failure: Some(error),
+                }
             }
         }
 
@@ -213,7 +221,10 @@ mod tests {
                 _route: &ProxyRoute,
                 _credentials: Option<&Credentials>,
             ) -> Result<ProxyResponse> {
-                Ok(ProxyResponse::new(self.status))
+                match &self.failure {
+                    Some(error) => Err(error.clone()),
+                    None => Ok(ProxyResponse::new(self.status)),
+                }
             }
         }
     }
@@ -337,6 +348,28 @@ mod tests {
             let response = service.handle_http_request(&request).await.unwrap();
 
             assert_eq!(response.status, http::StatusCode::OK);
+        }
+
+        #[tokio::test]
+        async fn closes_connection_when_http_client_fails() {
+            let resolver = MockResolver::new(ProxyRoute::Direct);
+            let credentials = MockCredentials::new(None);
+            let tracker = MockTracker::new();
+            let http_client = MockHttpClient::failing(ProxyError::ConnectionFailed("boom".to_string()));
+
+            let service = ProxyService::new(
+                Arc::new(resolver),
+                Arc::new(credentials),
+                Arc::new(tracker.clone()),
+                Arc::new(http_client),
+            );
+
+            let request = create_proxy_request(ProxyMethod::Get, "http://example.com");
+            let result = service.handle_http_request(&request).await;
+
+            assert!(result.is_err());
+            assert_eq!(tracker.track_calls(), 1);
+            assert_eq!(tracker.close_calls(), 1);
         }
 
         #[tokio::test]
